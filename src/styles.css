@@ -421,6 +421,14 @@ button.danger:hover {
   white-space: pre-wrap;
   cursor: text;
 }
+.row .txt a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+.row .txt a:hover {
+  text-decoration: underline;
+}
 .row.done .txt {
   color: var(--fg-3);
   text-decoration: line-through;

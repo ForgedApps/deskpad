@@ -9,6 +9,7 @@
 // calendar. The badge after the text shows when; its ✕ takes it off again.
 
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { fmtSchedule, fmtScheduleLong, parseMarker, parseSchedule, type Parsed } from "./schedule";
 
 export { parseMarker };
@@ -205,7 +206,60 @@ function caretOffset(el: HTMLElement): number {
   return r.toString().length;
 }
 
+// ---------- links ----------
+// A row shows its URLs as links while it is not being edited. Editing happens
+// on plain text (contenteditable=plaintext-only needs a single text node for
+// the caret helpers), so a row is flattened on mousedown/focus and linkified
+// again on blur. Clicking a link opens it without starting an edit.
+
+const URL_RE = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** HTML for `text` with URLs wrapped in anchors; trailing punctuation stays text. */
+export function linkify(text: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    let url = m[0];
+    const trail = /[.,;:!?)\]]+$/.exec(url);
+    if (trail) url = url.slice(0, -trail[0].length);
+    if (!url) continue;
+    const start = m.index!;
+    out += escapeHtml(text.slice(last, start));
+    const href = /^www\./i.test(url) ? `https://${url}` : url;
+    out += `<a href="${escapeHtml(href)}" data-ext title="${escapeHtml(href)}">${escapeHtml(url)}</a>`;
+    last = start + url.length;
+  }
+  return out + escapeHtml(text.slice(last));
+}
+
+/** Show the row's text with clickable links (display mode). */
+function showLinked(txt: HTMLElement, text: string) {
+  if (document.activeElement === txt) {
+    txt.textContent = text;
+    return;
+  }
+  txt.innerHTML = linkify(text);
+  txt.querySelectorAll<HTMLAnchorElement>("a[data-ext]").forEach((a) => {
+    a.addEventListener("mousedown", (e) => e.preventDefault());
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openUrl(a.href).catch((err) => console.error("openUrl failed", err));
+    });
+  });
+}
+
+/** Collapse the row to a single text node so editing and caret math work. */
+function plainText(el: HTMLElement) {
+  if (el.firstElementChild) el.textContent = el.textContent;
+}
+
 function setCaret(el: HTMLElement, pos: number | "end") {
+  plainText(el);
   el.focus();
   const sel = window.getSelection();
   if (!sel) return;
@@ -369,7 +423,7 @@ function refreshRow(id: number) {
   if (!it || !row) return;
   row.className = rowClass(it);
   const txt = row.querySelector<HTMLElement>(".txt");
-  if (txt && document.activeElement !== txt && txt.textContent !== it.text) txt.textContent = it.text;
+  if (txt && document.activeElement !== txt) showLinked(txt, it.text);
   const mark = row.querySelector<HTMLElement>(".mark");
   if (mark) {
     mark.innerHTML = it.kind === "task" ? CHECK : "";
@@ -412,7 +466,12 @@ function renderRow(it: Item): HTMLElement {
   txt.className = "txt";
   txt.contentEditable = "plaintext-only";
   txt.spellcheck = true;
-  txt.textContent = it.text;
+  showLinked(txt, it.text);
+  txt.addEventListener("mousedown", (e) => {
+    if ((e.target as HTMLElement).closest("a")) return;
+    plainText(txt);
+  });
+  txt.addEventListener("focus", () => plainText(txt));
   txt.addEventListener("input", () => onInput(it, txt));
   txt.addEventListener("keydown", (e) => onKey(e, it, txt));
   txt.addEventListener("blur", () => {
@@ -421,6 +480,7 @@ function renderRow(it: Item): HTMLElement {
       refreshRow(it.id);
       void commitSchedule(it, p);
     }
+    showLinked(txt, it.text);
     flushSave();
   });
 
@@ -655,7 +715,8 @@ export async function openArchive() {
     if (r.kind === "task") mark.innerHTML = `<svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" /></svg>`;
     const txt = document.createElement("div");
     txt.className = "txt";
-    txt.textContent = r.text || "(empty)";
+    if (r.text) showLinked(txt, r.text);
+    else txt.textContent = "(empty)";
     if (kids) {
       // The whole row is the disclosure here: nothing in the archive is editable.
       const toggle = () => {
@@ -666,7 +727,7 @@ export async function openArchive() {
       row.appendChild(renderToggle(!expanded.has(r.id), kids, toggle));
       row.classList.add("clickable");
       row.addEventListener("click", (e) => {
-        if ((e.target as HTMLElement).closest("button")) return;
+        if ((e.target as HTMLElement).closest("button, a")) return;
         toggle();
       });
     }

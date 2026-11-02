@@ -31,6 +31,7 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
   to an **archive** rather than deleting; open it from the Notes header to
   restore or permanently delete entries. Archived parents open folded; click
   one to see what was nested under it.
+  URLs in a row are clickable links while the row isn't being edited.
 - **Scheduled tasks**: write the time into the row and it goes on your calendar.
   "meet with tom next friday at 10am", "dentist tomorrow 2:30pm", "call mom
   tonight", "taxes on 4/15", "standup in 2 hours" all work, in the outline (on
