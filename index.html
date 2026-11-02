@@ -79,8 +79,8 @@
       <div class="panel-head">
         <h2>Notes <span id="task-count" class="count" title="Open tasks"></span></h2>
         <div class="head-links">
-          <button id="btn-clear-done" class="link" title="Move completed tasks to the archive" hidden>archive completed</button>
-          <button id="btn-archive" class="link" title="Open the archive" hidden>archive</button>
+          <button id="btn-clear-done" class="link" title="Move completed tasks out of the outline (they stay in the journal)" hidden>archive completed</button>
+          <button id="btn-journal" class="link" title="Journal: every day's notes, completed tasks and calendar events, including archived rows">journal</button>
         </div>
       </div>
       <div id="outline" class="list outline"></div>
@@ -89,21 +89,6 @@
     <footer class="hint">
       <kbd>Tab</kbd> nest · <kbd>-</kbd> or <kbd>[]</kbd> task · <kbd>Ctrl</kbd>+<kbd>Space</kbd> capture
     </footer>
-
-    <div id="archive" class="modal hidden">
-      <div class="modal-card archive-card">
-        <div class="panel-head">
-          <h2>Archive</h2>
-          <button id="btn-archive-close" class="icon small" title="Close" aria-label="Close">
-            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </div>
-        <div id="archive-list" class="list outline"></div>
-        <div class="modal-actions">
-          <button type="button" id="btn-archive-empty" class="danger" hidden>Delete all</button>
-        </div>
-      </div>
-    </div>
 
     <div id="settings" class="modal hidden">
       <form id="settings-form" class="modal-card">

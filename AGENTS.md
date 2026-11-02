@@ -17,7 +17,9 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src-tauri/src/google.rs` | Google OAuth (PKCE + loopback), Calendar read, event creation |
 | `src-tauri/nsis/installer.nsi` | Custom NSIS installer template (see below) |
 | `src/main.ts` | Sidebar: clock, meetings, add-event form, alert scheduler, settings |
-| `src/outline.ts` | Notes/tasks outliner and archive view |
+| `src/outline.ts` | Notes/tasks outliner |
+| `src/journal.ts`, `journal.html` | Journal window: timeline of days, one day's events/notes/completed/scheduled, search, restore/delete of archived rows |
+| `src/text.ts` | `linkify`, `dayKey` and other helpers shared by all windows |
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |
 | `index.html`, `capture.html`, `tab.html`, `alert.html` | One page per window (Vite multi-page) |
@@ -82,8 +84,8 @@ you ever need to inspect the real folders from a sandboxed shell, a UNC path
 ## Data safety rules (keep these intact)
 
 User data lives in `%APPDATA%\com.jgentes.deskpad\` (`tasks.json`,
-`archive.json`, `settings.json`, `google_tokens.json`, `backups\`). The
-installed app and the dev build share it.
+`archive.json`, `day_events.json`, `settings.json`, `google_tokens.json`,
+`backups\`). The installed app and the dev build share it.
 
 1. **Register state before windows exist.** `Store` and `Google` are loaded in
    `run()` before `tauri::Builder` runs, because config windows are created
@@ -171,8 +173,17 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   which drives alerts) plus the browsed day (`dayMeetings`) when it is another
   one. `tomorrow_until_hour` replaced the old rolling look-ahead.
 - Fold state (which parents are collapsed) is a view preference kept in
-  `localStorage` (`deskpad.collapsed`), never in `tasks.json`. The archive view
-  always opens with every parent folded.
+  `localStorage` (`deskpad.collapsed`), never in `tasks.json`.
+- Days are the record, the outline is the workspace. A row's day is derived
+  from `created_at` (local), `done_at` is set/cleared by the frontend when a
+  task is toggled, and `schedule.start` places it on a day. The journal
+  (`list_journal`) sees live and archived rows together; archiving only
+  removes a row from the outline. The sidebar calls `record_day_events(day,
+  meetings)` after every calendar load so `day_events.json` holds each day's
+  events as last seen; the journal prefers a live `get_meetings` and falls
+  back to that file (labelled "as recorded"). The journal window is created
+  hidden and only ever hidden on close (`open_journal` shows it); `show_item`
+  brings the sidebar back and focuses a row (`focus-item` event).
 - Scheduling: only the frontend parses language (`src/schedule.ts`,
   `parseSchedule(text, now)`; it is pure, so test it with
   `node --experimental-strip-types` and a fixed `now`). The outline runs it

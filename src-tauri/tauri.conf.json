@@ -67,6 +67,18 @@
         "visible": false,
         "transparent": true,
         "shadow": false
+      },
+      {
+        "label": "journal",
+        "title": "Deskpad Journal",
+        "url": "journal.html",
+        "width": 980,
+        "height": 720,
+        "minWidth": 640,
+        "minHeight": 420,
+        "resizable": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

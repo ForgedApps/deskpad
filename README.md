@@ -28,10 +28,18 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
   A bullet with nested rows folds and unfolds them instead (tasks get a chevron
   in the left gutter for that); a folded parent shows how many rows it hides.
   The row's ✕ and "archive N completed" move rows (with their nested children)
-  to an **archive** rather than deleting; open it from the Notes header to
-  restore or permanently delete entries. Archived parents open folded; click
-  one to see what was nested under it.
+  out of the outline into the archive rather than deleting them; they stay
+  visible in the journal on the day they were written.
   URLs in a row are clickable links while the row isn't being edited.
+- **Journal**: the outline is your workspace, the journal is the record. Open
+  it from the Notes header ("journal") for a resizable window with a timeline
+  of days down the left and one day in the middle: that day's calendar events
+  (live from Google, or as the sidebar last recorded them when Google isn't
+  reachable), everything written that day (live and archived rows, nested as
+  in the outline), tasks completed that day and tasks scheduled for it.
+  Archived rows can be restored or permanently deleted there; live rows have
+  a "show in sidebar" button. ←/→ step days, `t` jumps to today, `/` focuses
+  search, which looks through every row ever written and groups hits by day.
 - **Scheduled tasks**: write the time into the row and it goes on your calendar.
   "meet with tom next friday at 10am", "dentist tomorrow 2:30pm", "call mom
   tonight", "taxes on 4/15", "standup in 2 hours" all work, in the outline (on
@@ -113,6 +121,7 @@ Everything lives in `%APPDATA%\com.jgentes.deskpad\`:
 |---|---|
 | `tasks.json` | the notes/tasks outline |
 | `archive.json` | archived rows, with the time they were archived |
+| `day_events.json` | calendar events per day as the sidebar last saw them (for the journal; newest 2 years kept) |
 | `settings.json` | settings, including the Google OAuth client |
 | `google_tokens.json` | Google refresh token (delete to sign out) |
 | `backups\tasks-YYYY-MM-DD.json` | first copy of the outline seen each day, newest 30 kept |
@@ -140,6 +149,8 @@ or Explorer.
 | `src/main.ts`, `index.html` | Sidebar UI |
 | `src/outline.ts` | Notes/tasks outliner and archive view |
 | `src/schedule.ts` | Natural-language date/time parser shared by the outline and capture |
+| `src/journal.ts`, `journal.html` | Journal window: day timeline, day view, search |
+| `src/text.ts` | Link rendering and day-key helpers shared by all windows |
 | `src/capture.ts`, `capture.html` | Ctrl+Space capture popup |
 
 ## License

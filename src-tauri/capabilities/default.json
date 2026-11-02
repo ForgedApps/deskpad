@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the sidebar, capture, edge tab and alert windows",
+  "description": "Capability for the sidebar, capture, edge tab, alert and journal windows",
   "windows": [
     "main",
     "capture",
     "tab",
-    "alert"
+    "alert",
+    "journal"
   ],
   "permissions": [
     "core:default",

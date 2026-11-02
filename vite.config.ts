@@ -14,6 +14,7 @@ export default defineConfig(() => ({
         capture: resolve(process.cwd(), "capture.html"),
         tab: resolve(process.cwd(), "tab.html"),
         alert: resolve(process.cwd(), "alert.html"),
+        journal: resolve(process.cwd(), "journal.html"),
       },
     },
   },

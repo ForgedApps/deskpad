@@ -42,6 +42,52 @@ fn list_archive(store: State<Store>) -> Vec<ArchivedItem> {
     store.archive.lock().unwrap().clone()
 }
 
+/// Everything the journal needs in one call: live rows, archived rows and the
+/// recorded calendar events per day. Small enough to send whole.
+#[derive(Serialize)]
+struct JournalData {
+    items: Vec<Item>,
+    archive: Vec<ArchivedItem>,
+    day_events: std::collections::BTreeMap<String, Vec<calendar::Meeting>>,
+}
+
+#[tauri::command]
+fn list_journal(store: State<Store>) -> JournalData {
+    JournalData {
+        items: store.items.lock().unwrap().clone(),
+        archive: store.archive.lock().unwrap().clone(),
+        day_events: store.day_events.lock().unwrap().clone(),
+    }
+}
+
+/// The sidebar reports the events it fetched for a day (`YYYY-MM-DD`, local)
+/// so the journal can show them later without Google.
+#[tauri::command]
+fn record_day_events(app: AppHandle, store: State<Store>, day: String, meetings: Vec<calendar::Meeting>) {
+    if store.record_day_events(&day, meetings) {
+        app.emit_to("journal", "day-events-changed", day).ok();
+    }
+}
+
+/// Open (or raise) the journal window.
+#[tauri::command]
+fn open_journal(app: AppHandle) {
+    let Some(win) = app.get_webview_window("journal") else { return };
+    if win.is_minimized().unwrap_or(false) {
+        win.unminimize().ok();
+    }
+    win.show().ok();
+    win.set_focus().ok();
+    app.emit_to("journal", "journal-shown", ()).ok();
+}
+
+/// Bring the sidebar back and ask it to focus one row (from the journal).
+#[tauri::command]
+fn show_item(app: AppHandle, id: u64) {
+    set_sidebar_visible(&app, true);
+    app.emit_to("main", "focus-item", id).ok();
+}
+
 /// Move items (and their children) to the archive.
 #[tauri::command]
 fn archive_items(app: AppHandle, store: State<Store>, ids: Vec<u64>) {
@@ -756,6 +802,11 @@ pub fn run() {
                 WindowEvent::Focused(false) if window.label() == "capture" => {
                     window.hide().ok();
                 }
+                WindowEvent::CloseRequested { api, .. } if window.label() == "journal" => {
+                    // Keep the window around so reopening is instant.
+                    api.prevent_close();
+                    window.hide().ok();
+                }
                 WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
                     // Closing the sidebar hides it to the tray instead of quitting.
                     api.prevent_close();
@@ -771,6 +822,10 @@ pub fn run() {
             schedule_item,
             unschedule_item,
             list_archive,
+            list_journal,
+            record_day_events,
+            open_journal,
+            show_item,
             archive_items,
             restore_items,
             delete_archived,

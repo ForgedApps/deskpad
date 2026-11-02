@@ -1,4 +1,6 @@
+use crate::calendar::Meeting;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -17,6 +19,10 @@ pub struct Item {
     #[serde(default)]
     pub parent: Option<u64>,
     pub created_at: i64,
+    /// When the task was last marked done (unix seconds), so the journal can
+    /// show what got finished on a day. Cleared when it is reopened.
+    #[serde(default)]
+    pub done_at: Option<i64>,
     /// Set when the task is on the calendar.
     #[serde(default)]
     pub schedule: Option<Schedule>,
@@ -57,6 +63,7 @@ impl Item {
             done: false,
             parent,
             created_at: now.timestamp(),
+            done_at: None,
             schedule: None,
         })
     }
@@ -128,11 +135,18 @@ pub struct ArchivedItem {
     pub archived_at: i64,
 }
 
+/// Keep this many days of recorded calendar events (`day_events.json`).
+const DAY_EVENTS_KEEP_DAYS: i64 = 730;
+
 pub struct Store {
     pub dir: PathBuf,
     pub items: Mutex<Vec<Item>>,
     pub archive: Mutex<Vec<ArchivedItem>>,
     pub settings: Mutex<Settings>,
+    /// Calendar events as the sidebar last saw them, keyed by local day
+    /// (`YYYY-MM-DD`). The journal shows these when Google can't be reached
+    /// or the connection is gone, so a past day keeps its context.
+    pub day_events: Mutex<BTreeMap<String, Vec<Meeting>>>,
 }
 
 impl Store {
@@ -141,7 +155,37 @@ impl Store {
         let items = load_json(&dir.join("tasks.json")).unwrap_or_default();
         let archive = load_json(&dir.join("archive.json")).unwrap_or_default();
         let settings = load_json(&dir.join("settings.json")).unwrap_or_default();
-        Self { dir, items: Mutex::new(items), archive: Mutex::new(archive), settings: Mutex::new(settings) }
+        let day_events = load_json(&dir.join("day_events.json")).unwrap_or_default();
+        Self {
+            dir,
+            items: Mutex::new(items),
+            archive: Mutex::new(archive),
+            settings: Mutex::new(settings),
+            day_events: Mutex::new(day_events),
+        }
+    }
+
+    /// Remember the events of one day. Returns whether anything changed (the
+    /// sidebar calls this every few minutes; unchanged days are not rewritten).
+    pub fn record_day_events(&self, day: &str, meetings: Vec<Meeting>) -> bool {
+        if day.len() != 10 {
+            return false;
+        }
+        let mut map = self.day_events.lock().unwrap();
+        let same = map
+            .get(day)
+            .is_some_and(|old| serde_json::to_string(old).ok() == serde_json::to_string(&meetings).ok());
+        if same {
+            return false;
+        }
+        map.insert(day.to_string(), meetings);
+        // Prune very old days; keys sort as dates.
+        let cutoff = (chrono::Local::now() - chrono::Duration::days(DAY_EVENTS_KEEP_DAYS)).format("%Y-%m-%d").to_string();
+        map.retain(|k, _| k.as_str() >= cutoff.as_str());
+        if let Ok(json) = serde_json::to_string(&*map) {
+            write_atomic(&self.dir.join("day_events.json"), &json);
+        }
+        true
     }
 
     pub fn save_archive(&self) {
@@ -188,6 +232,7 @@ impl Store {
                 }
             }
             i.done = false;
+            i.done_at = None;
         }
         // Parents first, then children right after their parent.
         let parents: Vec<Item> = back.iter().filter(|i| i.parent.is_none()).cloned().collect();
@@ -284,7 +329,7 @@ mod tests {
     use super::{backup_daily, load_json, parse_marker, write_atomic, Item, Store};
 
     fn item(id: u64, parent: Option<u64>) -> Item {
-        Item { id, text: format!("item {id}"), kind: "note".into(), done: false, parent, created_at: 0, schedule: None }
+        Item { id, text: format!("item {id}"), kind: "note".into(), done: false, parent, created_at: 0, done_at: None, schedule: None }
     }
 
     #[test]
@@ -336,6 +381,24 @@ mod tests {
         let new = r#"[{"id":1,"text":"a","kind":"task","done":false,"parent":null,"created_at":0,"schedule":{"start":10,"end":20}}]"#;
         let items: Vec<Item> = serde_json::from_str(new).unwrap();
         assert_eq!(items[0].schedule, Some(super::Schedule { start: 10, end: 20, all_day: false, event_id: None }));
+    }
+
+    #[test]
+    fn day_events_are_recorded_once_and_pruned() {
+        use crate::calendar::Meeting;
+        let dir = std::env::temp_dir().join(format!("deskpad-dayev-{}", std::process::id()));
+        let store = Store::load(dir.clone());
+        let m = Meeting { id: "g:1".into(), title: "Standup".into(), start: 10, end: 20, all_day: false, location: None, url: None };
+        assert!(store.record_day_events("2026-11-02", vec![m.clone()]));
+        assert!(!store.record_day_events("2026-11-02", vec![m.clone()]), "unchanged day must not rewrite");
+        assert!(!store.record_day_events("bogus", vec![]));
+        assert!(store.record_day_events("2000-01-01", vec![m]), "accepted, then pruned");
+        let reloaded = Store::load(dir.clone());
+        let map = reloaded.day_events.lock().unwrap();
+        assert!(map.contains_key("2026-11-02"));
+        assert!(!map.contains_key("2000-01-01"));
+        drop(map);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

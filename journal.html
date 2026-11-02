@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Deskpad Journal</title>
+    <script type="module" src="/src/journal.ts" defer></script>
+  </head>
+  <body class="journal">
+    <header class="j-head">
+      <button id="j-prev" class="icon small" title="Previous day (←)" aria-label="Previous day">
+        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
+      </button>
+      <button id="j-next" class="icon small" title="Next day (→)" aria-label="Next day">
+        <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
+      </button>
+      <button id="j-today" class="link" title="Jump to today">today</button>
+      <h1 id="j-title">Journal</h1>
+      <input id="j-date" type="date" title="Pick a day" />
+      <input id="j-search" type="search" placeholder="Search all notes…" autocomplete="off" spellcheck="false" />
+    </header>
+    <div class="j-body">
+      <nav id="j-timeline" class="j-timeline" aria-label="Days"></nav>
+      <main id="j-main" class="j-main"></main>
+    </div>
+  </body>
+</html>

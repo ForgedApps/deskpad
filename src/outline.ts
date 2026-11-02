@@ -11,6 +11,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { fmtSchedule, fmtScheduleLong, parseMarker, parseSchedule, type Parsed } from "./schedule";
+import { linkify } from "./text";
 
 export { parseMarker };
 
@@ -29,6 +30,8 @@ export interface Item {
   done: boolean;
   parent: number | null;
   created_at: number;
+  /** When the task was last marked done; null when open. */
+  done_at: number | null;
   schedule: Schedule | null;
 }
 
@@ -123,7 +126,7 @@ function blockEnd(parentId: number): number {
 }
 
 function newItem(text: string, parent: number | null, kind: "note" | "task" = "note"): Item {
-  return { id: Date.now() * 1000 + Math.floor(Math.random() * 1000), text, kind, done: false, parent, created_at: Math.floor(Date.now() / 1000), schedule: null };
+  return { id: Date.now() * 1000 + Math.floor(Math.random() * 1000), text, kind, done: false, parent, created_at: Math.floor(Date.now() / 1000), done_at: null, schedule: null };
 }
 
 const CHECK = `<svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" /></svg>`;
@@ -187,7 +190,7 @@ export async function loadItems() {
     // Keep unsaved local text edits for rows the backend still has.
     for (const f of fetched) {
       const local = byId(f.id);
-      if (local) Object.assign(f, { text: local.text, kind: local.kind, done: local.done, schedule: local.schedule });
+      if (local) Object.assign(f, { text: local.text, kind: local.kind, done: local.done, done_at: local.done_at, schedule: local.schedule });
     }
   }
   items = fetched;
@@ -211,30 +214,6 @@ function caretOffset(el: HTMLElement): number {
 // on plain text (contenteditable=plaintext-only needs a single text node for
 // the caret helpers), so a row is flattened on mousedown/focus and linkified
 // again on blur. Clicking a link opens it without starting an edit.
-
-const URL_RE = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-/** HTML for `text` with URLs wrapped in anchors; trailing punctuation stays text. */
-export function linkify(text: string): string {
-  let out = "";
-  let last = 0;
-  for (const m of text.matchAll(URL_RE)) {
-    let url = m[0];
-    const trail = /[.,;:!?)\]]+$/.exec(url);
-    if (trail) url = url.slice(0, -trail[0].length);
-    if (!url) continue;
-    const start = m.index!;
-    out += escapeHtml(text.slice(last, start));
-    const href = /^www\./i.test(url) ? `https://${url}` : url;
-    out += `<a href="${escapeHtml(href)}" data-ext title="${escapeHtml(href)}">${escapeHtml(url)}</a>`;
-    last = start + url.length;
-  }
-  return out + escapeHtml(text.slice(last));
-}
 
 /** Show the row's text with clickable links (display mode). */
 function showLinked(txt: HTMLElement, text: string) {
@@ -315,7 +294,6 @@ function render() {
   const clearBtn = $<HTMLButtonElement>("#btn-clear-done");
   clearBtn.hidden = done === 0;
   clearBtn.textContent = done === 1 ? "archive 1 completed" : `archive ${done} completed`;
-  refreshArchiveLink();
 
   if (pendingFocus) {
     const target = pendingFocus.id === "new" ? el.querySelector<HTMLElement>(".row.new .txt") : el.querySelector<HTMLElement>(`.row[data-id="${pendingFocus.id}"] .txt`);
@@ -453,8 +431,10 @@ function renderRow(it: Item): HTMLElement {
       toggleCollapsed(it.id);
       return;
     }
-    if (it.kind === "task") it.done = !it.done;
-    else it.kind = "task";
+    if (it.kind === "task") {
+      it.done = !it.done;
+      it.done_at = it.done ? Math.floor(Date.now() / 1000) : null;
+    } else it.kind = "task";
     row.className = rowClass(it);
     mark.title = it.done ? "Mark not done" : "Mark done";
     mark.innerHTML = `<svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" /></svg>`;
@@ -650,123 +630,17 @@ export function clearCompleted() {
   return archive(items.filter((i) => i.kind === "task" && i.done).map((i) => i.id));
 }
 
-// ---------- archive view ----------
+// ---------- journal hand-off ----------
 
-let archiveCount = 0;
-
-async function refreshArchiveLink() {
-  try {
-    archiveCount = (await invoke<ArchivedItem[]>("list_archive")).length;
-  } catch {
-    archiveCount = 0;
+/** Bring one row into view and put the caret in it (the journal's "show in sidebar"). */
+export function focusItem(id: number) {
+  const it = byId(id);
+  if (!it) return;
+  if (it.parent !== null && collapsed.has(it.parent)) {
+    collapsed.delete(it.parent);
+    saveCollapsed();
   }
-  const link = $<HTMLButtonElement>("#btn-archive");
-  link.hidden = archiveCount === 0;
-  link.textContent = `archive ${archiveCount}`;
-}
-
-export async function openArchive() {
-  const modal = $("#archive");
-  const list = $("#archive-list");
-  modal.classList.remove("hidden");
-  list.innerHTML = `<div class="empty">Loading…</div>`;
-  let rows: ArchivedItem[] = [];
-  try {
-    rows = await invoke<ArchivedItem[]>("list_archive");
-  } catch (err) {
-    list.innerHTML = `<div class="error">Couldn't load archive: ${String(err)}</div>`;
-    return;
-  }
-  if (!rows.length) {
-    list.innerHTML = `<div class="empty">Nothing archived. Rows you ✕ and completed tasks you archive end up here.</div>`;
-    $<HTMLButtonElement>("#btn-archive-empty").hidden = true;
-    return;
-  }
-  $<HTMLButtonElement>("#btn-archive-empty").hidden = false;
-  // Newest first, children grouped under their parent when both are archived.
-  const byTime = [...rows].sort((a, b) => b.archived_at - a.archived_at || a.id - b.id);
-  const ids = new Set(rows.map((r) => r.id));
-  const ordered: ArchivedItem[] = [];
-  for (const r of byTime) {
-    if (r.parent !== null && ids.has(r.parent)) continue;
-    ordered.push(r, ...byTime.filter((c) => c.parent === r.id));
-  }
-  // Every archived parent starts folded; clicking it reveals the nested rows.
-  const expanded = new Set<number>();
-  function rebuild() {
-  const frag = document.createDocumentFragment();
-  let lastDay = "";
-  for (const r of ordered) {
-    const isChild = r.parent !== null && ids.has(r.parent);
-    if (isChild && !expanded.has(r.parent as number)) continue;
-    const kids = isChild ? 0 : byTime.filter((c) => c.parent === r.id).length;
-    const day = new Date(r.archived_at * 1000).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
-    if (day !== lastDay && !isChild) {
-      const sep = document.createElement("div");
-      sep.className = "day-sep";
-      sep.textContent = day;
-      frag.appendChild(sep);
-      lastDay = day;
-    }
-    const row = document.createElement("div");
-    row.className = `row arch ${r.kind}${r.done ? " done" : ""}${isChild ? " child" : ""}${kids ? " parent" : ""}${kids && !expanded.has(r.id) ? " collapsed" : ""}`;
-    const mark = document.createElement("span");
-    mark.className = "mark";
-    if (r.kind === "task") mark.innerHTML = `<svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" /></svg>`;
-    const txt = document.createElement("div");
-    txt.className = "txt";
-    if (r.text) showLinked(txt, r.text);
-    else txt.textContent = "(empty)";
-    if (kids) {
-      // The whole row is the disclosure here: nothing in the archive is editable.
-      const toggle = () => {
-        if (expanded.has(r.id)) expanded.delete(r.id);
-        else expanded.add(r.id);
-        rebuild();
-      };
-      row.appendChild(renderToggle(!expanded.has(r.id), kids, toggle));
-      row.classList.add("clickable");
-      row.addEventListener("click", (e) => {
-        if ((e.target as HTMLElement).closest("button, a")) return;
-        toggle();
-      });
-    }
-    const restore = document.createElement("button");
-    restore.className = "mini";
-    restore.title = "Restore to notes";
-    restore.innerHTML = `<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4" /><path d="M3 3v6h6" /></svg>`;
-    restore.addEventListener("click", async () => {
-      const group = [r.id, ...rows.filter((c) => c.parent === r.id).map((c) => c.id)];
-      await invoke("restore_items", { ids: group }).catch((err) => console.error("restore failed", err));
-      await loadItems();
-      openArchive();
-    });
-    const del = document.createElement("button");
-    del.className = "mini danger";
-    del.title = "Delete permanently";
-    del.innerHTML = `<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>`;
-    del.addEventListener("click", async () => {
-      const group = [r.id, ...rows.filter((c) => c.parent === r.id).map((c) => c.id)];
-      await invoke("delete_archived", { ids: group }).catch((err) => console.error("delete failed", err));
-      refreshArchiveLink();
-      openArchive();
-    });
-    row.append(mark, txt);
-    if (kids && !expanded.has(r.id)) row.appendChild(renderCount(kids));
-    row.append(restore, del);
-    frag.appendChild(row);
-  }
-  list.replaceChildren(frag);
-  }
-  rebuild();
-}
-
-export async function emptyArchive() {
-  await invoke("delete_archived", { ids: [] }).catch((err) => console.error("delete failed", err));
-  refreshArchiveLink();
-  openArchive();
-}
-
-export function focusNewRow() {
-  setCaret($(".row.new .txt"), 0);
+  pendingFocus = { id, caret: "end" };
+  render();
+  document.querySelector(`.row[data-id="${id}"]`)?.scrollIntoView({ block: "center" });
 }

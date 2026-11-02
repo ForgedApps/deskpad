@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { clearCompleted, emptyArchive, loadItems, openArchive } from "./outline";
+import { clearCompleted, focusItem, loadItems } from "./outline";
+import { dayKey } from "./text";
 
 interface Meeting {
   id: string;
@@ -209,6 +210,7 @@ async function loadMeetings(_force = false) {
     if (e) dayMeetings = e.meetings;
     renderMeetings();
     checkAlerts();
+    recordDays();
   } catch (err) {
     $("#meetings").innerHTML = `<div class="error">Couldn't load calendar: ${String(err)}</div>`;
   } finally {
@@ -217,6 +219,21 @@ async function loadMeetings(_force = false) {
 }
 
 let dayLoadSeq = 0;
+
+/** Hand the backend each fetched day's events so the journal can show past
+ *  days even when Google isn't reachable. Today and tomorrow from `meetings`,
+ *  plus the browsed day when it is another one. */
+function recordDays() {
+  const record = (offset: number, list: Meeting[]) => {
+    const start = dayStart(offset);
+    const end = dayStart(offset + 1);
+    const evs = list.filter((m) => m.start < end && m.end > start);
+    invoke("record_day_events", { day: dayKey(start), meetings: evs }).catch((err) => console.error("record_day_events failed", err));
+  };
+  record(0, meetings);
+  record(1, meetings);
+  if (dayOffset !== 0) record(dayOffset, dayMeetings);
+}
 
 /** Browse another day; a quick succession of clicks only fetches the last one. */
 async function showDay(offset: number) {
@@ -233,6 +250,7 @@ async function showDay(offset: number) {
     if (seq !== dayLoadSeq) return;
     dayMeetings = r.meetings;
     renderMeetings();
+    recordDays();
   } catch (err) {
     if (seq !== dayLoadSeq) return;
     $("#meetings").innerHTML = `<div class="error">Couldn't load calendar: ${String(err)}</div>`;
@@ -439,14 +457,7 @@ function wireUi() {
   $("#ev-cancel").addEventListener("click", () => toggleEventForm(false));
   $("#event-form").addEventListener("submit", submitEvent);
   $("#btn-clear-done").addEventListener("click", () => clearCompleted());
-  $("#btn-archive").addEventListener("click", () => openArchive());
-  $("#btn-archive-close").addEventListener("click", () => $("#archive").classList.add("hidden"));
-  $("#btn-archive-empty").addEventListener("click", () => {
-    if (confirm("Permanently delete everything in the archive?")) emptyArchive();
-  });
-  $("#archive").addEventListener("click", (e) => {
-    if (e.target === $("#archive")) $("#archive").classList.add("hidden");
-  });
+  $("#btn-journal").addEventListener("click", () => invoke("open_journal").catch((err) => console.error("open_journal failed", err)));
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#btn-settings-cancel").addEventListener("click", () => $("#settings").classList.add("hidden"));
   $("#btn-quit").addEventListener("click", () => invoke("quit"));
@@ -456,7 +467,6 @@ function wireUi() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       $("#settings").classList.add("hidden");
-      $("#archive").classList.add("hidden");
       toggleEventForm(false);
     }
   });
@@ -510,6 +520,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setInterval(() => loadMeetings(), 5 * 60_000);
 
   listen("items-changed", () => loadItems()).catch((err) => console.error("listen failed", err));
+  listen<number>("focus-item", (e) => focusItem(e.payload)).catch((err) => console.error("listen failed", err));
   // A task was put on (or taken off) the calendar from the outline or capture.
   listen("calendar-changed", () => loadMeetings(true)).catch((err) => console.error("listen failed", err));
   listen("open-settings", () => openSettings()).catch((err) => console.error("listen failed", err));
