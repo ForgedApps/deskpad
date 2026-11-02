@@ -159,6 +159,11 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
 
 ## Conventions
 
+- Theme: `src/styles.css` defines every color as a token on `:root` (dark) and
+  overrides them under `@media (prefers-color-scheme: light)`; WebView2 maps
+  that query to the Windows app theme, and no window pins a `theme` in
+  `tauri.conf.json`. Use the tokens (`--border`, `--hover`, `--shadow`, …);
+  never write a literal color in a rule.
 - Commands return `Result<_, String>` with user-readable messages; the
   frontend shows them verbatim.
 - Frontend code relays `console.error` and uncaught errors to the backend via

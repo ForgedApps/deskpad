@@ -9,7 +9,8 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
 
 - **Docked sidebar** pinned to the right edge of the primary monitor. By default it
   registers as a Windows AppBar, so maximized windows stop at its edge instead of
-  going underneath it (toggle in Settings).
+  going underneath it (toggle in Settings). Every window follows the Windows
+  light/dark app theme.
 - **Today's calendar** from Google Calendar (OAuth, all your checked calendars,
   with Meet/Zoom/Teams join links). The view is a day: today by default, with
   tomorrow's early meetings called out below it (Settings → "Show tomorrow's

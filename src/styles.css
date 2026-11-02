@@ -1,3 +1,5 @@
+/* Colors follow the Windows app theme (WebView2 reports it through
+   prefers-color-scheme). Dark is the base; light overrides the tokens. */
 :root {
   --bg: #15171c;
   --bg-2: #1d2027;
@@ -7,13 +9,47 @@
   --fg-3: #646a78;
   --accent: #6c9cff;
   --accent-2: #3d64c7;
+  --accent-soft: rgba(108, 156, 255, 0.18);
   --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.12);
   --now: #4cd27f;
+  --now-bg: #1b2a22;
+  --border: #2c3039;
+  --border-2: #3a3f4b;
+  --hover: #2f3440;
+  --active: #353a47;
+  --shadow: rgba(0, 0, 0, 0.55);
+  --scrim: rgba(0, 0, 0, 0.55);
   --radius: 10px;
   font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   font-size: 14px;
   color: var(--fg);
   color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f7f9;
+    --bg-2: #ffffff;
+    --bg-3: #e9eaef;
+    --fg: #1b1d23;
+    --fg-2: #5c6270;
+    --fg-3: #9096a3;
+    --accent: #2f63d6;
+    --accent-2: #2452b8;
+    --accent-soft: rgba(47, 99, 214, 0.14);
+    --danger: #d64545;
+    --danger-soft: rgba(214, 69, 69, 0.1);
+    --now: #1f9e58;
+    --now-bg: #e6f5ec;
+    --border: #dcdee5;
+    --border-2: #c9ccd6;
+    --hover: #e9eaef;
+    --active: #dddfe6;
+    --shadow: rgba(20, 24, 36, 0.18);
+    --scrim: rgba(30, 34, 44, 0.35);
+    color-scheme: light;
+  }
 }
 
 * {
@@ -31,7 +67,7 @@ body.sidebar {
   background: var(--bg);
   display: flex;
   flex-direction: column;
-  border-left: 1px solid #2c3039;
+  border-left: 1px solid var(--border);
   user-select: none;
 }
 
@@ -70,7 +106,7 @@ button {
   cursor: pointer;
 }
 button:hover {
-  background: #2f3440;
+  background: var(--hover);
 }
 button.icon {
   width: 32px;
@@ -96,7 +132,7 @@ button.icon:hover {
   background: var(--bg-3);
 }
 button.icon:active {
-  background: #353a47;
+  background: var(--active);
 }
 button.icon.small {
   width: 24px;
@@ -138,7 +174,7 @@ button.danger {
   color: var(--danger);
 }
 button.danger:hover {
-  background: rgba(255, 107, 107, 0.12);
+  background: var(--danger-soft);
 }
 
 /* ---------- panels ---------- */
@@ -224,7 +260,7 @@ button.danger:hover {
 }
 .meeting.now {
   border-left-color: var(--now);
-  background: #1b2a22;
+  background: var(--now-bg);
 }
 .meeting.past {
   opacity: 0.4;
@@ -276,7 +312,7 @@ button.danger:hover {
   stroke-linejoin: round;
 }
 .meeting .m-join:hover {
-  background: rgba(108, 156, 255, 0.18);
+  background: var(--accent-soft);
 }
 .meeting.now .m-join {
   color: var(--now);
@@ -333,7 +369,7 @@ button.danger:hover {
   font: inherit;
   color: var(--fg);
   background: var(--bg-2);
-  border: 1px solid #2c3039;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;
   outline: none;
@@ -596,7 +632,7 @@ kbd {
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -608,7 +644,7 @@ kbd {
 }
 .modal-card {
   background: var(--bg-2);
-  border: 1px solid #2c3039;
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px;
   width: 100%;
@@ -663,10 +699,10 @@ body.capture {
   align-items: center;
   gap: 10px;
   background: var(--bg-2);
-  border: 1px solid #3a3f4b;
+  border: 1px solid var(--border-2);
   border-radius: 14px;
   padding: 12px 16px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 12px 40px var(--shadow);
   position: relative;
 }
 .capture-icon {
@@ -700,7 +736,7 @@ body.capture {
 
 /* ---------- settings: google ---------- */
 fieldset {
-  border: 1px solid #2c3039;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px 12px;
   margin: 0;
@@ -740,14 +776,14 @@ body.tab {
   width: 100%;
   height: 100%;
   padding: 0;
-  border: 1px solid #3a3f4b;
+  border: 1px solid var(--border-2);
   border-right: none;
   border-radius: 8px 0 0 8px;
   background: var(--bg-2);
   color: var(--fg-2);
   display: grid;
   place-items: center;
-  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.4);
+  box-shadow: -2px 0 10px var(--shadow);
 }
 .edge-tab:hover {
   background: var(--bg-3);
@@ -830,7 +866,7 @@ body.tab {
   font-size: 12.5px;
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid #2c3039;
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 5px 8px;
   outline: none;
@@ -876,10 +912,10 @@ body.alert {
 .alert-card {
   width: min(560px, 90vw);
   background: var(--bg-2);
-  border: 1px solid #3a3f4b;
+  border: 1px solid var(--border-2);
   border-radius: 18px;
   padding: 32px 36px 24px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 30px 80px var(--shadow);
   text-align: center;
   display: flex;
   flex-direction: column;
@@ -975,7 +1011,7 @@ body.journal {
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  border-bottom: 1px solid #2c3039;
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 .j-head h1 {
@@ -1001,7 +1037,7 @@ body.journal {
 }
 .j-head input {
   background: var(--bg-2);
-  border: 1px solid #2c3039;
+  border: 1px solid var(--border);
   color: var(--fg);
   border-radius: 6px;
   padding: 4px 8px;
@@ -1024,7 +1060,7 @@ body.journal {
 }
 .j-timeline {
   overflow-y: auto;
-  border-right: 1px solid #2c3039;
+  border-right: 1px solid var(--border);
   padding: 6px 0 20px;
 }
 .j-month {
