@@ -146,6 +146,14 @@ it is not flush with the monitor's right edge (`needs_redock`), and
 `schedule_redock_checks` in `lib.rs` sweeps a few times after launch in case the
 shell drops the stale strip silently. Keep both when touching docking.
 
+Waking from sleep displaces the window the same way: the display comes back in
+steps and the shell moves AppBars after the first notification was answered
+(and a second notification inside the 500 ms echo guard is ignored). So the
+subclass also listens for `WM_POWERBROADCAST` resume and `WM_DPICHANGED`, and
+every notification starts a one-second `SWEEP_TIMER` that re-checks for
+12 ticks; a `SLOW_TIMER` re-checks every 20 s as a last resort, skipped while
+`STUCK` says a re-dock could not reach the edge (another AppBar owns it).
+
 **When bumping `@tauri-apps/cli`**, re-copy the template from the matching tag
 (`crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi` at
 `tauri-cli-v<version>`), re-apply the four marked changes, and keep the header

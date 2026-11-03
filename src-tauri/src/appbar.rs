@@ -3,7 +3,7 @@
 
 #[cfg(windows)]
 pub mod imp {
-    use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
@@ -14,19 +14,38 @@ pub mod imp {
         ABM_REMOVE, ABM_SETPOS, ABN_POSCHANGED, APPBARDATA,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsWindowVisible, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOZORDER,
-        SWP_SHOWWINDOW, SW_HIDE, WM_APP, WM_DISPLAYCHANGE, WM_SETTINGCHANGE,
+        GetWindowRect, IsWindowVisible, KillTimer, SetTimer, SetWindowPos, ShowWindow,
+        SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WM_APP, WM_DISPLAYCHANGE,
+        WM_DPICHANGED, WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_TIMER,
     };
 
     /// Message the shell sends us for AppBar notifications (ABN_*).
     const CALLBACK_MSG: u32 = WM_APP + 0x0A5B;
     const SUBCLASS_ID: usize = 0x0A5B;
+    /// `WM_POWERBROADCAST` events for waking up (PBT_APMRESUMEAUTOMATIC / ..SUSPEND).
+    const PBT_APMRESUMESUSPEND: usize = 0x0007;
+    const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
+    /// Timer that re-checks the dock once a second for a while after anything that
+    /// can move us (display or work-area change, AppBar notification, wake from sleep).
+    /// A single check is not enough: on resume the display comes back in steps and
+    /// the shell may move us after we already answered the first notification.
+    const SWEEP_TIMER: usize = 0x0A5C;
+    const SWEEP_TICKS: u32 = 12;
+    /// Slow background check as a last resort for events nobody notifies us about.
+    const SLOW_TIMER: usize = 0x0A5D;
+    const SLOW_MS: u32 = 20_000;
 
     /// Width of the current reservation in physical pixels (0 = not reserving).
     static RESERVED_WIDTH: AtomicI32 = AtomicI32::new(0);
     /// When we last docked, in ms since the epoch. Notifications arriving right after
     /// our own ABM_NEW/ABM_SETPOS are echoes of that and are ignored.
     static LAST_DOCK_MS: AtomicU64 = AtomicU64::new(0);
+    /// Sweep ticks left (0 = sweep timer idle).
+    static SWEEP_LEFT: AtomicU32 = AtomicU32::new(0);
+    /// Set when a re-dock did not get us flush with the edge (something else owns
+    /// it, e.g. a right-hand taskbar); the slow timer then leaves things alone
+    /// until the next notification, instead of re-registering every tick.
+    static STUCK: AtomicBool = AtomicBool::new(false);
 
     fn now_ms() -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -62,7 +81,17 @@ pub mod imp {
             }
             let width = RESERVED_WIDTH.load(Ordering::Relaxed);
             dock_right(hwnd, width, true);
+            STUCK.store(needs_redock(hwnd), Ordering::Relaxed);
             true
+        }
+    }
+
+    /// Start (or restart) the one-second sweep that re-checks the dock for a while.
+    unsafe fn start_sweep(hwnd: HWND) {
+        unsafe {
+            STUCK.store(false, Ordering::Relaxed);
+            SWEEP_LEFT.store(SWEEP_TICKS, Ordering::Relaxed);
+            SetTimer(Some(hwnd), SWEEP_TIMER, 1000, None);
         }
     }
 
@@ -77,9 +106,30 @@ pub mod imp {
         unsafe {
             let notified = (msg == CALLBACK_MSG && wparam.0 as u32 == ABN_POSCHANGED)
                 || msg == WM_DISPLAYCHANGE
-                || msg == WM_SETTINGCHANGE;
+                || msg == WM_SETTINGCHANGE
+                || msg == WM_DPICHANGED
+                || (msg == WM_POWERBROADCAST
+                    && (wparam.0 == PBT_APMRESUMEAUTOMATIC || wparam.0 == PBT_APMRESUMESUSPEND));
             if notified {
                 redock_if_displaced(hwnd);
+                start_sweep(hwnd);
+            }
+            if msg == WM_TIMER && wparam.0 == SWEEP_TIMER {
+                let left = SWEEP_LEFT.load(Ordering::Relaxed).saturating_sub(1);
+                SWEEP_LEFT.store(left, Ordering::Relaxed);
+                if left == 0 {
+                    let _ = KillTimer(Some(hwnd), SWEEP_TIMER);
+                }
+                if redock_if_displaced(hwnd) {
+                    eprintln!("[dock] re-docked after displacement (sweep)");
+                }
+                return LRESULT(0);
+            }
+            if msg == WM_TIMER && wparam.0 == SLOW_TIMER {
+                if !STUCK.load(Ordering::Relaxed) && redock_if_displaced(hwnd) {
+                    eprintln!("[dock] re-docked after displacement (slow check)");
+                }
+                return LRESULT(0);
             }
             if msg == CALLBACK_MSG {
                 return LRESULT(0);
@@ -123,6 +173,11 @@ pub mod imp {
             SHAppBarMessage(ABM_REMOVE, &mut abd);
             // Idempotent for the same id; lets us hear ABN_POSCHANGED and re-dock.
             let _ = SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0);
+            if reserve {
+                SetTimer(Some(hwnd), SLOW_TIMER, SLOW_MS, None);
+            } else {
+                let _ = KillTimer(Some(hwnd), SLOW_TIMER);
+            }
             RESERVED_WIDTH.store(if reserve { width_px } else { 0 }, Ordering::Relaxed);
             LAST_DOCK_MS.store(now_ms(), Ordering::Relaxed);
 
@@ -165,6 +220,8 @@ pub mod imp {
             let mut abd = data(hwnd);
             SHAppBarMessage(ABM_REMOVE, &mut abd);
             RESERVED_WIDTH.store(0, Ordering::Relaxed);
+            let _ = KillTimer(Some(hwnd), SLOW_TIMER);
+            let _ = KillTimer(Some(hwnd), SWEEP_TIMER);
         }
     }
 
