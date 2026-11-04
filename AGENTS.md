@@ -150,9 +150,15 @@ Waking from sleep displaces the window the same way: the display comes back in
 steps and the shell moves AppBars after the first notification was answered
 (and a second notification inside the 500 ms echo guard is ignored). So the
 subclass also listens for `WM_POWERBROADCAST` resume and `WM_DPICHANGED`, and
-every notification starts a one-second `SWEEP_TIMER` that re-checks for
-12 ticks; a `SLOW_TIMER` re-checks every 20 s as a last resort, skipped while
-`STUCK` says a re-dock could not reach the edge (another AppBar owns it).
+every notification that is not an echo of our own dock starts a one-second
+`SWEEP_TIMER` that re-checks for 12 ticks; a `SLOW_TIMER` re-checks every 20 s
+as a last resort. Both skip while `STUCK` says a re-dock could not reach the
+edge (another AppBar owns it). `redock_if_displaced` re-registers the AppBar
+only when the strip is gone; while the shell still holds it, the window is
+just moved back with `SetWindowPos`. A full re-registration in that state
+makes the shell bounce the window inboard again within ~60 ms, and combined
+with a sweep restarted by the echo that produced a sidebar flashing once a
+second (seen 2026-11-04 after a wake).
 
 **When bumping `@tauri-apps/cli`**, re-copy the template from the matching tag
 (`crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi` at

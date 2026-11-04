@@ -71,16 +71,41 @@ pub mod imp {
         }
     }
 
-    /// Re-dock if `needs_redock`, unless we docked ourselves within the last 500 ms.
+    /// True while a notification could be the shell's echo of our own dock.
+    fn in_echo_window() -> bool {
+        now_ms().saturating_sub(LAST_DOCK_MS.load(Ordering::Relaxed)) <= 500
+    }
+
+    /// Put the window back on the right edge if `needs_redock`.
+    ///
+    /// Two cases. When the shell still holds our strip (the work area stops exactly
+    /// one reserved width short of the monitor edge) only the window drifted, so it
+    /// is moved back with a plain `SetWindowPos` and nothing is re-registered: after
+    /// waking from sleep Windows parks the window inboard of the strip, and a full
+    /// re-registration there made the shell bounce it straight back inboard again,
+    /// which looked like the sidebar flashing once a second. Only when the strip
+    /// itself is gone (stale registration from a killed process, shell restart) is
+    /// the AppBar registered again from scratch.
     pub unsafe fn redock_if_displaced(hwnd: HWND) -> bool {
         unsafe {
-            if now_ms().saturating_sub(LAST_DOCK_MS.load(Ordering::Relaxed)) <= 500
-                || !needs_redock(hwnd)
-            {
+            if in_echo_window() || !needs_redock(hwnd) {
                 return false;
             }
             let width = RESERVED_WIDTH.load(Ordering::Relaxed);
-            dock_right(hwnd, width, true);
+            let (full, work) = monitor_rects(hwnd);
+            if work.right == full.right - width {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    full.right - width,
+                    full.top,
+                    width,
+                    full.bottom - full.top,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            } else {
+                dock_right(hwnd, width, true);
+            }
             STUCK.store(needs_redock(hwnd), Ordering::Relaxed);
             true
         }
@@ -110,7 +135,9 @@ pub mod imp {
                 || msg == WM_DPICHANGED
                 || (msg == WM_POWERBROADCAST
                     && (wparam.0 == PBT_APMRESUMEAUTOMATIC || wparam.0 == PBT_APMRESUMESUSPEND));
-            if notified {
+            // An echo of our own dock must not restart the sweep, or every re-dock
+            // would schedule the next one forever.
+            if notified && !in_echo_window() {
                 redock_if_displaced(hwnd);
                 start_sweep(hwnd);
             }
@@ -120,7 +147,7 @@ pub mod imp {
                 if left == 0 {
                     let _ = KillTimer(Some(hwnd), SWEEP_TIMER);
                 }
-                if redock_if_displaced(hwnd) {
+                if !STUCK.load(Ordering::Relaxed) && redock_if_displaced(hwnd) {
                     eprintln!("[dock] re-docked after displacement (sweep)");
                 }
                 return LRESULT(0);
