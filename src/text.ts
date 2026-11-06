@@ -24,6 +24,59 @@ export function linkify(text: string): string {
   return out + escapeHtml(text.slice(last));
 }
 
+function anchor(href: string, label: string): string {
+  const url = /^www\./i.test(href) ? `https://${href}` : href;
+  return `<a href="${escapeHtml(url)}" data-ext title="${escapeHtml(url)}">${escapeHtml(label)}</a>`;
+}
+
+/** Inline styling markers on a segment that holds no code span, link or URL. */
+function styled(s: string): string {
+  let h = escapeHtml(s);
+  h = h.replace(/\*\*(\S(?:[^*]*?\S)?)\*\*/g, "<strong>$1</strong>");
+  h = h.replace(/~~(\S(?:[^~]*?\S)?)~~/g, "<s>$1</s>");
+  h = h.replace(/(^|[^\w*])\*(\S(?:[^*]*?\S)?)\*(?=[^\w*]|$)/g, "$1<em>$2</em>");
+  h = h.replace(/(^|[^\w_])_(\S(?:[^_]*?\S)?)_(?=[^\w_]|$)/g, "$1<em>$2</em>");
+  return h;
+}
+
+const INLINE_RE = /`([^`\n]+)`|\[([^\]\n]+)\]\(((?:https?:\/\/|www\.)[^\s)]+)\)|(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+
+/**
+ * HTML for a row's text. Rows are stored as plain text with a small Markdown
+ * subset, which is what pasted rich text is converted to and what the row shows
+ * while it is being edited: `**bold**`, `*italic*` / `_italic_`, `~~struck~~`,
+ * `` `code` ``, `[label](url)`, and bare URLs become links as before.
+ */
+export function renderInline(text: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(INLINE_RE)) {
+    const start = m.index!;
+    out += styled(text.slice(last, start));
+    last = start + m[0].length;
+    if (m[1] !== undefined) out += `<code>${escapeHtml(m[1])}</code>`;
+    else if (m[2] !== undefined) out += anchor(m[3], m[2]);
+    else {
+      let url = m[0];
+      const trail = /[.,;:!?)\]]+$/.exec(url);
+      if (trail) url = url.slice(0, -trail[0].length);
+      out += anchor(url, url) + escapeHtml(trail ? trail[0] : "");
+    }
+  }
+  return out + styled(text.slice(last));
+}
+
+/** The row's text without its formatting markers (for titles and tooltips). */
+export function stripInline(text: string): string {
+  return text
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/\[([^\]\n]+)\]\((?:https?:\/\/|www\.)[^\s)]+\)/gi, "$1")
+    .replace(/\*\*(\S(?:[^*]*?\S)?)\*\*/g, "$1")
+    .replace(/~~(\S(?:[^~]*?\S)?)~~/g, "$1")
+    .replace(/(^|[^\w*])\*(\S(?:[^*]*?\S)?)\*(?=[^\w*]|$)/g, "$1$2")
+    .replace(/(^|[^\w_])_(\S(?:[^_]*?\S)?)_(?=[^\w_]|$)/g, "$1$2");
+}
+
 /** Local calendar day of a unix timestamp as `YYYY-MM-DD`. */
 export function dayKey(unix: number): string {
   return dayKeyOf(new Date(unix * 1000));

@@ -1,6 +1,6 @@
 use crate::calendar::Meeting;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -152,7 +152,8 @@ pub struct Store {
 impl Store {
     pub fn load(dir: PathBuf) -> Self {
         fs::create_dir_all(&dir).ok();
-        let items = load_json(&dir.join("tasks.json")).unwrap_or_default();
+        let mut items: Vec<Item> = load_json(&dir.join("tasks.json")).unwrap_or_default();
+        normalize(&mut items);
         let archive = load_json(&dir.join("archive.json")).unwrap_or_default();
         let settings = load_json(&dir.join("settings.json")).unwrap_or_default();
         let day_events = load_json(&dir.join("day_events.json")).unwrap_or_default();
@@ -195,25 +196,29 @@ impl Store {
         }
     }
 
-    /// Move the given items, plus any children of them, from the outline to
-    /// the archive. Returns how many rows moved.
+    /// Move the given items, plus everything nested under them at any depth,
+    /// from the outline to the archive. Returns how many rows moved.
     pub fn archive_items(&self, ids: &[u64]) -> usize {
         let now = chrono::Utc::now().timestamp();
         let mut items = self.items.lock().unwrap();
         let mut archive = self.archive.lock().unwrap();
-        let doomed: Vec<Item> = items
-            .iter()
-            .filter(|i| ids.contains(&i.id) || i.parent.is_some_and(|p| ids.contains(&p)))
-            .cloned()
-            .collect();
+        // Rows are in pre-order, so one pass catches descendants of descendants.
+        let mut gone: HashSet<u64> = ids.iter().copied().collect();
+        for i in items.iter() {
+            if i.parent.is_some_and(|p| gone.contains(&p)) {
+                gone.insert(i.id);
+            }
+        }
+        let doomed: Vec<Item> = items.iter().filter(|i| gone.contains(&i.id)).cloned().collect();
         items.retain(|i| !doomed.iter().any(|d| d.id == i.id));
         let n = doomed.len();
         archive.extend(doomed.into_iter().map(|item| ArchivedItem { item, archived_at: now }));
         n
     }
 
-    /// Move archived rows back to the end of the outline. A child whose parent
-    /// is not also coming back (or no longer in the outline) becomes top-level.
+    /// Move archived rows back into the outline. A row whose parent is still in
+    /// the outline goes back under it; one whose parent is neither there nor
+    /// coming back becomes top-level at the end.
     pub fn restore_items(&self, ids: &[u64]) {
         let mut items = self.items.lock().unwrap();
         let mut archive = self.archive.lock().unwrap();
@@ -224,30 +229,12 @@ impl Store {
             .collect();
         archive.retain(|a| !ids.contains(&a.item.id));
         for i in back.iter_mut() {
-            if let Some(p) = i.parent {
-                let parent_known = items.iter().any(|x| x.id == p && x.parent.is_none())
-                    || ids.contains(&p);
-                if !parent_known {
-                    i.parent = None;
-                }
-            }
             i.done = false;
             i.done_at = None;
         }
-        // Parents first, then children right after their parent.
-        let parents: Vec<Item> = back.iter().filter(|i| i.parent.is_none()).cloned().collect();
-        for p in parents {
-            let pid = p.id;
-            items.push(p);
-            items.extend(back.iter().filter(|c| c.parent == Some(pid)).cloned());
-        }
-        for c in back.into_iter().filter(|c| c.parent.is_some()) {
-            if !items.iter().any(|x| x.id == c.id) {
-                let pid = c.parent.unwrap();
-                let at = items.iter().rposition(|x| x.id == pid || x.parent == Some(pid)).map(|i| i + 1).unwrap_or(items.len());
-                items.insert(at, c);
-            }
-        }
+        items.extend(back);
+        // Unknown parents become top-level and every row lands after its parent.
+        normalize(&mut items);
     }
 
     pub fn save_items(&self) {
@@ -324,9 +311,56 @@ pub fn backup_daily(path: &std::path::Path, backups: &std::path::Path) {
     }
 }
 
+/// Put rows in pre-order (every row directly followed by its descendants,
+/// keeping their relative order) and make rows whose parent is missing, or
+/// part of a cycle, top-level. The frontend keeps this invariant while
+/// editing; this re-establishes it after a load or a restore.
+pub fn normalize(items: &mut Vec<Item>) {
+    let ids: HashSet<u64> = items.iter().map(|i| i.id).collect();
+    for i in items.iter_mut() {
+        if i.parent.is_some_and(|p| p == i.id || !ids.contains(&p)) {
+            i.parent = None;
+        }
+    }
+    fn emit(items: &[Item], parent: Option<u64>, out: &mut Vec<Item>, seen: &mut HashSet<u64>) {
+        for i in items {
+            if i.parent == parent && seen.insert(i.id) {
+                out.push(i.clone());
+                emit(items, Some(i.id), out, seen);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(items.len());
+    let mut seen = HashSet::new();
+    emit(items, None, &mut out, &mut seen);
+    for i in items.iter() {
+        if !seen.contains(&i.id) {
+            let mut c = i.clone();
+            c.parent = None;
+            out.push(c);
+        }
+    }
+    *items = out;
+}
+
+/// The row text without its Markdown markers, for calendar event titles.
+pub fn strip_inline(text: &str) -> String {
+    let mut s = text.replace("**", "").replace("~~", "").replace('`', "");
+    // [label](url) -> label
+    while let Some(open) = s.find('[') {
+        let Some(close) = s[open..].find("](") else { break };
+        let close = open + close;
+        let Some(end) = s[close..].find(')') else { break };
+        let end = close + end;
+        let label = s[open + 1..close].to_string();
+        s.replace_range(open..=end, &label);
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{backup_daily, load_json, parse_marker, write_atomic, Item, Store};
+    use super::{backup_daily, load_json, normalize, parse_marker, strip_inline, write_atomic, Item, Store};
 
     fn item(id: u64, parent: Option<u64>) -> Item {
         Item { id, text: format!("item {id}"), kind: "note".into(), done: false, parent, created_at: 0, done_at: None, schedule: None }
@@ -352,6 +386,39 @@ mod tests {
         assert_eq!(ids, vec![(4, None), (2, None), (1, None), (3, Some(1))]);
         assert!(store.archive.lock().unwrap().is_empty());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn archive_takes_deep_descendants_and_restore_nests_under_a_live_parent() {
+        let dir = std::env::temp_dir().join(format!("deskpad-deep-{}", std::process::id()));
+        let store = Store::load(dir.clone());
+        // 1 > 2 > 3 > 4, then 5 top-level.
+        *store.items.lock().unwrap() = vec![item(1, None), item(2, Some(1)), item(3, Some(2)), item(4, Some(3)), item(5, None)];
+        assert_eq!(store.archive_items(&[2]), 3);
+        let ids: Vec<u64> = store.items.lock().unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(ids, vec![1, 5]);
+        // The grandchild alone comes back under its live grandparent-chain's nearest known parent: none, so top-level.
+        store.restore_items(&[4]);
+        let ids: Vec<(u64, Option<u64>)> = store.items.lock().unwrap().iter().map(|i| (i.id, i.parent)).collect();
+        assert_eq!(ids, vec![(1, None), (5, None), (4, None)]);
+        // 2 and 3 come back under 1, directly after it, and 3 under 2.
+        store.restore_items(&[2, 3]);
+        let ids: Vec<(u64, Option<u64>)> = store.items.lock().unwrap().iter().map(|i| (i.id, i.parent)).collect();
+        assert_eq!(ids, vec![(1, None), (2, Some(1)), (3, Some(2)), (5, None), (4, None)]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn normalize_reorders_and_breaks_cycles() {
+        let mut items = vec![item(3, Some(1)), item(1, None), item(2, Some(1)), item(7, Some(9)), item(5, Some(6)), item(6, Some(5))];
+        normalize(&mut items);
+        let ids: Vec<(u64, Option<u64>)> = items.iter().map(|i| (i.id, i.parent)).collect();
+        assert_eq!(ids, vec![(1, None), (3, Some(1)), (2, Some(1)), (7, None), (5, None), (6, None)]);
+    }
+
+    #[test]
+    fn strip_inline_drops_markers() {
+        assert_eq!(strip_inline("**call** [Tom](https://x.y/z) re `plan` ~~old~~"), "call Tom re plan old");
     }
 
     #[test]

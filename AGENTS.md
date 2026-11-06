@@ -17,9 +17,10 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src-tauri/src/google.rs` | Google OAuth (PKCE + loopback), Calendar read, event creation |
 | `src-tauri/nsis/installer.nsi` | Custom NSIS installer template (see below) |
 | `src/main.ts` | Sidebar: clock, meetings, add-event form, alert scheduler, settings |
-| `src/outline.ts` | Notes/tasks outliner |
+| `src/outline.ts` | Notes/tasks outliner (any nesting depth, pre-order list) |
+| `src/paste.ts` | Clipboard HTML/plain text → rows with nesting and Markdown markers |
 | `src/journal.ts`, `journal.html` | Journal window: timeline of days, one day's events/notes/completed/scheduled, search, restore/delete of archived rows |
-| `src/text.ts` | `linkify`, `dayKey` and other helpers shared by all windows |
+| `src/text.ts` | `renderInline` (Markdown subset + links), `stripInline`, `dayKey` and other helpers shared by all windows |
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |
 | `index.html`, `capture.html`, `tab.html`, `alert.html` | One page per window (Vite multi-page) |
@@ -193,6 +194,20 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   one. `tomorrow_until_hour` replaced the old rolling look-ahead.
 - Fold state (which parents are collapsed) is a view preference kept in
   `localStorage` (`deskpad.collapsed`), never in `tasks.json`.
+- Rows nest to any depth through `parent`, and `tasks.json` is kept in
+  pre-order (every row directly followed by its descendants). `normalize`
+  (in both `outline.ts` and `store.rs`) re-establishes that after a load or a
+  restore and makes orphans and cycle members top-level; `archive_items`
+  takes all descendants. Nesting is drawn with the `--depth` custom property
+  on `.row`, in the sidebar and the journal alike.
+- Row text is plain with a Markdown subset (`**`, `*`/`_`, `~~`, backticks,
+  `[label](url)`), rendered by `renderInline` while a row isn't being edited
+  and shown raw while it is (`showLinked` keeps the raw text in `data-raw`,
+  `plainText` restores it on focus). `parseClipboard` in `paste.ts` turns
+  pasted HTML (lists → nesting, `li[role=checkbox]` → tasks, inline styles
+  from Google Docs/Word → markers) or plain lines into rows; a one-line paste
+  without markers is left to the browser. `strip_inline` in `store.rs` keeps
+  markers out of calendar event titles.
 - Days are the record, the outline is the workspace. A row's day is derived
   from `created_at` (local), `done_at` is set/cleared by the frontend when a
   task is toggled, and `schedule.start` places it on a day. The journal

@@ -1,7 +1,14 @@
 // Workflowy-style outline: every row is a note by default, becomes a task via
-// a marker (`- `, `[]`, `/task`) or Ctrl+Enter, and can nest one level under
-// the item above it with Tab. The frontend owns ordering; after every change
-// the whole list is sent to the backend with `set_items`.
+// a marker (`- `, `[]`, `/task`) or Ctrl+Enter, and nests to any depth under
+// the row above it with Tab. Rows are stored in pre-order (a row is followed by
+// all of its descendants); `normalize` restores that after a load. The frontend
+// owns ordering; after every change the whole list is sent to the backend with
+// `set_items`.
+//
+// Text is plain with a Markdown subset for formatting (see `renderInline`):
+// a row shows the formatting while it isn't being edited and the raw markers
+// while it is. Pasting rich text converts it (`parseClipboard`): list items
+// become nested rows, bold/italic/links become markers.
 //
 // A row whose text names a date or time ("meet tom next friday at 10am") is
 // scheduled when it is committed (Enter or leaving the row): the phrase is
@@ -11,7 +18,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { fmtSchedule, fmtScheduleLong, parseMarker, parseSchedule, type Parsed } from "./schedule";
-import { linkify } from "./text";
+import { renderInline } from "./text";
+import { parseClipboard, type PastedLine } from "./paste";
 
 export { parseMarker };
 
@@ -53,7 +61,57 @@ let pendingFocus: { id: number | "new"; caret: number | "end" } | null = null;
 
 const idx = (id: number) => items.findIndex((i) => i.id === id);
 const byId = (id: number) => items.find((i) => i.id === id);
-const childrenOf = (id: number) => items.filter((c) => c.parent === id);
+
+function depthOf(it: Item): number {
+  let d = 0;
+  let p = it.parent;
+  for (let guard = 0; p !== null && guard < 1000; guard++) {
+    const q = byId(p);
+    if (!q) break;
+    d++;
+    p = q.parent;
+  }
+  return d;
+}
+
+/** Ids of every row nested under `id`, at any depth. */
+function descendants(id: number): Set<number> {
+  const set = new Set<number>([id]);
+  for (let k = idx(id) + 1; k < items.length; k++) {
+    const p = items[k].parent;
+    if (p !== null && set.has(p)) set.add(items[k].id);
+    else break;
+  }
+  set.delete(id);
+  return set;
+}
+
+/** Put rows in pre-order and make rows whose parent is missing (or part of a
+ *  cycle) top-level. Data from older builds or a hand-edited file stays usable. */
+function normalize(list: Item[]): Item[] {
+  const ids = new Set(list.map((i) => i.id));
+  for (const i of list) if (i.parent !== null && (i.parent === i.id || !ids.has(i.parent))) i.parent = null;
+  const out: Item[] = [];
+  const seen = new Set<number>();
+  const emit = (parent: number | null) => {
+    for (const i of list) {
+      if (i.parent === parent && !seen.has(i.id)) {
+        seen.add(i.id);
+        out.push(i);
+        emit(i.id);
+      }
+    }
+  };
+  emit(null);
+  for (const i of list) {
+    if (!seen.has(i.id)) {
+      i.parent = null;
+      seen.add(i.id);
+      out.push(i);
+    }
+  }
+  return out;
+}
 
 // ---------- collapse state ----------
 // Which parents are folded is a view preference, not data: it lives in
@@ -88,9 +146,18 @@ export function toggleCollapsed(id: number, force?: boolean) {
   render();
 }
 
-/** Rows currently shown, i.e. everything except children of folded parents. */
+/** Rows currently shown, i.e. everything except what sits under a folded row. */
 function visibleItems(): Item[] {
-  return items.filter((i) => i.parent === null || !collapsed.has(i.parent));
+  const hidden = new Set<number>();
+  const out: Item[] = [];
+  for (const i of items) {
+    if (i.parent !== null && (collapsed.has(i.parent) || hidden.has(i.parent))) {
+      hidden.add(i.id);
+      continue;
+    }
+    out.push(i);
+  }
+  return out;
 }
 
 const CHEVRON = `<svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>`;
@@ -118,11 +185,15 @@ function renderCount(count: number): HTMLElement {
   return badge;
 }
 
-/** Index of the last row in `parentId`'s block (the parent itself if childless). */
-function blockEnd(parentId: number): number {
-  let end = idx(parentId);
-  for (let i = end + 1; i < items.length && items[i].parent === parentId; i++) end = i;
-  return end;
+/** Index of the last row in `id`'s block: itself, or its last descendant. */
+function blockEnd(id: number): number {
+  return idx(id) + descendants(id).size;
+}
+
+/** Take a row and its descendants out of the list; returns them in order. */
+function spliceBlock(id: number): Item[] {
+  const i = idx(id);
+  return items.splice(i, blockEnd(id) - i + 1);
 }
 
 function newItem(text: string, parent: number | null, kind: "note" | "task" = "note"): Item {
@@ -132,8 +203,9 @@ function newItem(text: string, parent: number | null, kind: "note" | "task" = "n
 const CHECK = `<svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" /></svg>`;
 
 function remove(id: number) {
-  // Promote children so nothing is orphaned.
-  for (const i of items) if (i.parent === id) i.parent = null;
+  // Children move up a level so nothing is orphaned.
+  const it = byId(id);
+  for (const i of items) if (i.parent === id) i.parent = it?.parent ?? null;
   items = items.filter((i) => i.id !== id);
 }
 
@@ -193,7 +265,7 @@ export async function loadItems() {
       if (local) Object.assign(f, { text: local.text, kind: local.kind, done: local.done, done_at: local.done_at, schedule: local.schedule });
     }
   }
-  items = fetched;
+  items = normalize(fetched);
   loaded = true;
   render();
 }
@@ -209,19 +281,21 @@ function caretOffset(el: HTMLElement): number {
   return r.toString().length;
 }
 
-// ---------- links ----------
-// A row shows its URLs as links while it is not being edited. Editing happens
-// on plain text (contenteditable=plaintext-only needs a single text node for
-// the caret helpers), so a row is flattened on mousedown/focus and linkified
-// again on blur. Clicking a link opens it without starting an edit.
+// ---------- display vs edit ----------
+// A row shows its formatting (links, bold, …) while it is not being edited.
+// Editing happens on the raw text (contenteditable=plaintext-only needs a
+// single text node for the caret helpers), so a row is flattened to its raw
+// text on mousedown/focus and rendered again on blur. Clicking a link opens it
+// without starting an edit.
 
-/** Show the row's text with clickable links (display mode). */
+/** Show the row's text rendered (display mode); the raw text is kept on the element. */
 function showLinked(txt: HTMLElement, text: string) {
+  txt.dataset.raw = text;
   if (document.activeElement === txt) {
     txt.textContent = text;
     return;
   }
-  txt.innerHTML = linkify(text);
+  txt.innerHTML = renderInline(text);
   txt.querySelectorAll<HTMLAnchorElement>("a[data-ext]").forEach((a) => {
     a.addEventListener("mousedown", (e) => e.preventDefault());
     a.addEventListener("click", (e) => {
@@ -232,9 +306,10 @@ function showLinked(txt: HTMLElement, text: string) {
   });
 }
 
-/** Collapse the row to a single text node so editing and caret math work. */
+/** Collapse the row to a single text node holding the raw text so editing and
+ *  caret math work. A no-op while editing (there are no elements then). */
 function plainText(el: HTMLElement) {
-  if (el.firstElementChild) el.textContent = el.textContent;
+  if (el.firstElementChild) el.textContent = el.dataset.raw ?? el.textContent;
 }
 
 function setCaret(el: HTMLElement, pos: number | "end") {
@@ -284,7 +359,7 @@ function render() {
   for (const id of [...collapsed]) {
     if (!byId(id) || !items.some((c) => c.parent === id)) collapsed.delete(id);
   }
-  for (const it of visibleItems()) frag.appendChild(renderRow(it));
+  for (const it of visibleItems()) frag.appendChild(renderRow(it, depthOf(it)));
   frag.appendChild(renderNewRow());
   el.replaceChildren(frag);
 
@@ -303,7 +378,7 @@ function render() {
 }
 
 function rowClass(it: Item) {
-  const kids = it.parent === null && items.some((c) => c.parent === it.id);
+  const kids = items.some((c) => c.parent === it.id);
   return `row ${it.kind}${it.done ? " done" : ""}${it.parent !== null ? " child" : ""}${kids ? " parent" : ""}${kids && collapsed.has(it.id) ? " collapsed" : ""}${it.schedule ? " scheduled" : ""}`;
 }
 
@@ -411,17 +486,18 @@ function refreshRow(id: number) {
   if (it.schedule && txt) txt.after(renderWhen(it));
 }
 
-function renderRow(it: Item): HTMLElement {
+function renderRow(it: Item, depth: number): HTMLElement {
   const row = document.createElement("div");
   row.className = rowClass(it);
   row.dataset.id = String(it.id);
+  row.style.setProperty("--depth", String(depth));
 
   const mark = document.createElement("button");
   mark.className = "mark";
   mark.tabIndex = -1;
   mark.title = it.kind === "task" ? (it.done ? "Mark not done" : "Mark done") : "Turn into a task";
   mark.innerHTML = it.kind === "task" ? `<svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" /></svg>` : "";
-  const kidCount = childrenOf(it.id).length;
+  const kidCount = descendants(it.id).size;
   if (kidCount && it.kind === "note") mark.title = collapsed.has(it.id) ? `Expand ${kidCount} nested` : "Collapse";
   mark.addEventListener("mousedown", (e) => e.preventDefault());
   mark.addEventListener("click", () => {
@@ -454,6 +530,7 @@ function renderRow(it: Item): HTMLElement {
   txt.addEventListener("focus", () => plainText(txt));
   txt.addEventListener("input", () => onInput(it, txt));
   txt.addEventListener("keydown", (e) => onKey(e, it, txt));
+  txt.addEventListener("paste", (e) => onPaste(e, it, txt));
   txt.addEventListener("blur", () => {
     const p = detectSchedule(it);
     if (p) {
@@ -489,6 +566,7 @@ function renderNewRow(): HTMLElement {
   txt.className = "txt";
   txt.contentEditable = "plaintext-only";
   txt.dataset.placeholder = items.length ? "Add a note…" : "Add a note… start with - or [] for a task";
+  txt.addEventListener("paste", (e) => onPaste(e, null, txt));
   txt.addEventListener("input", () => {
     const raw = txt.textContent ?? "";
     if (!raw) return;
@@ -551,10 +629,11 @@ function onKey(e: KeyboardEvent, it: Item, txt: HTMLElement) {
       // Committing a row with a date in it puts it on the calendar.
       const sched = detectSchedule(it);
       if (sched) void commitSchedule(it, sched);
-      const hasChildren = it.parent === null && items[i + 1]?.parent === it.id;
-      if (hasChildren) collapsed.delete(it.id);
+      // With children showing, the new row becomes the first child; otherwise
+      // it follows the whole block as a sibling.
+      const hasChildren = items[i + 1]?.parent === it.id && !collapsed.has(it.id);
       const next = newItem(after, hasChildren ? it.id : it.parent);
-      items.splice(i + 1, 0, next);
+      items.splice(hasChildren ? i + 1 : blockEnd(it.id) + 1, 0, next);
       pendingFocus = { id: next.id, caret: 0 };
       scheduleSave();
       render();
@@ -563,19 +642,20 @@ function onKey(e: KeyboardEvent, it: Item, txt: HTMLElement) {
     case "Tab": {
       e.preventDefault();
       if (e.shiftKey) {
+        // Outdent: become the sibling right after the current parent's block.
         if (it.parent === null) return;
-        const parent = it.parent;
-        remove(it.id);
-        it.parent = null;
-        items.splice(blockEnd(parent) + 1, 0, it);
+        const parent = byId(it.parent);
+        if (!parent) return;
+        const block = spliceBlock(it.id);
+        it.parent = parent.parent;
+        items.splice(blockEnd(parent.id) + 1, 0, ...block);
       } else {
-        if (it.parent !== null) return;
+        // Indent under the previous sibling; our own children come along.
         let p = -1;
-        for (let k = i - 1; k >= 0; k--) if (items[k].parent === null) { p = k; break; }
+        for (let k = i - 1; k >= 0; k--) if (items[k].parent === it.parent) { p = k; break; }
         if (p < 0) return;
         const parentId = items[p].id;
-        // Our own children become siblings under the new parent (one level max).
-        for (const c of items) if (c.parent === it.id) c.parent = parentId;
+        collapsed.delete(parentId);
         it.parent = parentId;
       }
       pendingFocus = { id: it.id, caret: caretOffset(txt) };
@@ -619,6 +699,79 @@ function onKey(e: KeyboardEvent, it: Item, txt: HTMLElement) {
   }
 }
 
+// ---------- paste ----------
+
+function onPaste(e: ClipboardEvent, it: Item | null, txt: HTMLElement) {
+  const dt = e.clipboardData;
+  if (!dt) return;
+  const plain = dt.getData("text/plain");
+  const lines = parseClipboard(dt.getData("text/html"), plain);
+  if (!lines.length) return;
+  if (lines.length === 1 && !lines[0].kind) {
+    // One line: goes in at the caret like typed text (keeps undo). Unless it
+    // picked up formatting markers, the browser's own plain paste is fine.
+    if (lines[0].text === plain.trim()) return;
+    e.preventDefault();
+    document.execCommand("insertText", false, lines[0].text);
+    return;
+  }
+  e.preventDefault();
+  insertLines(it, txt, lines);
+}
+
+/** Put pasted lines into the outline: the first joins the row at the caret, the
+ *  rest become rows after it, nested as the source was relative to this row. */
+function insertLines(it: Item | null, txt: HTMLElement, lines: PastedLine[]) {
+  const [first, ...rest] = lines;
+  let anchor: Item;
+  let after = "";
+  if (it) {
+    const at = caretOffset(txt);
+    after = it.text.slice(at);
+    it.text = it.text.slice(0, at) + first.text;
+    if (first.kind) {
+      it.kind = "task";
+      it.done = first.done;
+      it.done_at = first.done ? Math.floor(Date.now() / 1000) : null;
+    } else if (!it.text.trim()) {
+      const m = parseMarker(it.text);
+      if (m.kind) {
+        it.kind = m.kind;
+        it.text = m.text;
+      }
+    }
+    anchor = it;
+  } else {
+    const m = parseMarker(first.text);
+    anchor = newItem(m.kind ? m.text : first.text, null, first.kind ?? m.kind ?? "note");
+    anchor.done = first.done;
+    items.push(anchor);
+  }
+  // Rows at each depth that later lines can nest under; depth 0 is the anchor's level.
+  const byDepth: Item[] = [anchor];
+  let last = anchor;
+  let at = blockEnd(anchor.id) + 1;
+  for (const line of rest) {
+    const depth = Math.min(line.depth, byDepth.length - 1 + 1);
+    const parent = depth === 0 ? anchor.parent : byDepth[depth - 1].id;
+    const m = parseMarker(line.text);
+    const row = newItem(m.kind ? m.text : line.text, parent, line.kind ?? m.kind ?? "note");
+    if (line.kind && line.done) {
+      row.done = true;
+      row.done_at = Math.floor(Date.now() / 1000);
+    }
+    items.splice(at++, 0, row);
+    byDepth.length = depth;
+    byDepth[depth] = row;
+    last = row;
+  }
+  if (after) last.text += after;
+  for (const d of byDepth) if (d) collapsed.delete(d.id);
+  pendingFocus = { id: last.id, caret: last.text.length - after.length };
+  scheduleSave();
+  render();
+}
+
 function focusRow(id: number) {
   const el = document.querySelector<HTMLElement>(`.row[data-id="${id}"] .txt`);
   if (el) setCaret(el, "end");
@@ -636,10 +789,11 @@ export function clearCompleted() {
 export function focusItem(id: number) {
   const it = byId(id);
   if (!it) return;
-  if (it.parent !== null && collapsed.has(it.parent)) {
-    collapsed.delete(it.parent);
-    saveCollapsed();
+  let changed = false;
+  for (let p = it.parent; p !== null; p = byId(p)?.parent ?? null) {
+    if (collapsed.delete(p)) changed = true;
   }
+  if (changed) saveCollapsed();
   pendingFocus = { id, caret: "end" };
   render();
   document.querySelector(`.row[data-id="${id}"]`)?.scrollIntoView({ block: "center" });

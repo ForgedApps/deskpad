@@ -389,8 +389,8 @@ button.danger:hover {
   border-radius: 6px;
   position: relative;
 }
-.row.child {
-  margin-left: 22px;
+.row {
+  margin-left: calc(var(--depth, 0) * 22px);
 }
 .row:hover,
 .row:focus-within {
@@ -464,6 +464,19 @@ button.danger:hover {
 }
 .row .txt a:hover {
   text-decoration: underline;
+}
+.row .txt strong {
+  font-weight: 600;
+}
+.row .txt code {
+  font-family: Cascadia Code, Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--bg-3);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.row .txt s {
+  color: var(--fg-3);
 }
 .row.done .txt {
   color: var(--fg-3);

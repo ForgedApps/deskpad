@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ArchivedItem, Item } from "./outline";
-import { addDays, dayKey, escapeHtml, fmtDayTitle, fmtTime, keyToDate, linkify, relativeDayName, todayKey } from "./text";
+import { addDays, dayKey, escapeHtml, fmtDayTitle, fmtTime, keyToDate, relativeDayName, renderInline, stripInline, todayKey } from "./text";
 import { fmtSchedule } from "./schedule";
 
 interface Meeting {
@@ -186,10 +186,13 @@ async function renderDay() {
   const writtenIds = new Set(written.map((r) => r.item.id));
   const notes = section("Written", written.length ? `${written.length}` : undefined);
   if (!written.length) notes.body.appendChild(emptyLine(day === todayKey() ? "Nothing written yet today." : "Nothing written this day."));
+  const renderTree = (r: JRow, depth: number) => {
+    notes.body.appendChild(renderRow(r, depth ? { depth } : { context: true }));
+    for (const c of written.filter((c) => c.item.parent === r.item.id)) renderTree(c, depth + 1);
+  };
   for (const r of written) {
     if (r.item.parent !== null && writtenIds.has(r.item.parent)) continue; // rendered under its parent
-    notes.body.appendChild(renderRow(r, { context: true }));
-    for (const c of written.filter((c) => c.item.parent === r.item.id)) notes.body.appendChild(renderRow(c, { child: true }));
+    renderTree(r, 0);
   }
   frag.appendChild(notes.wrap);
 
@@ -269,11 +272,12 @@ function renderMeeting(m: Meeting): HTMLElement {
   return card;
 }
 
-function renderRow(r: JRow, opts: { context?: boolean; child?: boolean; when?: number }): HTMLElement {
+function renderRow(r: JRow, opts: { context?: boolean; depth?: number; when?: number }): HTMLElement {
   const it = r.item;
   const row = document.createElement("div");
-  row.className = `row ${it.kind}${it.done ? " done" : ""}${r.archived ? " arch" : ""}${opts.child ? " child" : ""}`;
+  row.className = `row ${it.kind}${it.done ? " done" : ""}${r.archived ? " arch" : ""}${opts.depth ? " child" : ""}`;
   row.dataset.id = String(it.id);
+  if (opts.depth) row.style.setProperty("--depth", String(opts.depth));
 
   const mark = document.createElement("span");
   mark.className = "mark";
@@ -283,7 +287,7 @@ function renderRow(r: JRow, opts: { context?: boolean; child?: boolean; when?: n
   body.className = "body";
   const txt = document.createElement("div");
   txt.className = "txt";
-  if (it.text) txt.innerHTML = linkify(it.text);
+  if (it.text) txt.innerHTML = renderInline(it.text);
   else {
     txt.textContent = "(empty)";
     txt.classList.add("faint");
@@ -296,7 +300,10 @@ function renderRow(r: JRow, opts: { context?: boolean; child?: boolean; when?: n
   if (opts.when) meta.push(`written ${fmtDayShort(it.created_at)}`);
   if (opts.context && it.parent !== null) {
     const p = byId(it.parent);
-    if (p) meta.push(`in “${p.item.text.slice(0, 40)}${p.item.text.length > 40 ? "…" : ""}”`);
+    if (p) {
+      const t = stripInline(p.item.text);
+      meta.push(`in “${t.slice(0, 40)}${t.length > 40 ? "…" : ""}”`);
+    }
   }
   if (it.schedule && opts.when !== it.schedule.start) meta.push(`on calendar ${fmtSchedule(it.schedule.start, it.schedule.all_day)}`);
   if (r.archived && r.archived_at) meta.push(`archived ${fmtDayShort(r.archived_at)}`);

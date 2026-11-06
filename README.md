@@ -23,7 +23,7 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
 - **Notes & tasks outline** persisted locally (`%APPDATA%\com.jgentes.deskpad\tasks.json`).
   Every row is a note by default. Start it with `- ` or `[]`, or put `/task` anywhere
   in the text, to make it a task (`/note` converts back, as does **Ctrl+Enter**).
-  **Tab** nests a row under the one above (one level), **Shift+Tab** un-nests,
+  **Tab** nests a row under the one above (to any depth), **Shift+Tab** un-nests,
   **Enter** splits or creates a row, **Backspace** on an empty row deletes it.
   Click a bullet to turn a note into a task; click a checkbox to complete it.
   A bullet with nested rows folds and unfolds them instead (tasks get a chevron
@@ -31,7 +31,12 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
   The row's ✕ and "archive N completed" move rows (with their nested children)
   out of the outline into the archive rather than deleting them; they stay
   visible in the journal on the day they were written.
-  URLs in a row are clickable links while the row isn't being edited.
+  URLs in a row are clickable links while the row isn't being edited, and a
+  small Markdown set shows as formatting then too: `**bold**`, `*italic*`,
+  `~~struck~~`, `` `code` `` and `[label](url)`. Pasting rich text (from a web
+  page, Google Docs, Word, …) keeps bold, italics and links as those markers,
+  turns list items into nested rows and checklist items into tasks; pasting
+  several plain lines makes a row per line, indented lines nested.
 - **Journal**: the outline is your workspace, the journal is the record. Open
   it from the Notes header ("journal") for a resizable window with a timeline
   of days down the left and one day in the middle: that day's calendar events

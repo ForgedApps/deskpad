@@ -150,7 +150,7 @@ async fn schedule_item(
     let (title, existing) = {
         let items = store.items.lock().unwrap();
         let it = items.iter().find(|i| i.id == id).ok_or("That row no longer exists.")?;
-        (it.text.clone(), it.schedule.as_ref().and_then(|s| s.event_id.clone()))
+        (store::strip_inline(&it.text), it.schedule.as_ref().and_then(|s| s.event_id.clone()))
     };
     let (cid, secret) = {
         let s = store.settings.lock().unwrap();
