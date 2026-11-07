@@ -25,6 +25,7 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |
 | `index.html`, `capture.html`, `tab.html`, `alert.html` | One page per window (Vite multi-page) |
+| `docs/sync-architecture.md` | Design for cloud sync, backup and multi-tenancy on Cloudflare (not built yet) |
 
 Windows are declared in `src-tauri/tauri.conf.json`; every window label must
 also be listed in `src-tauri/capabilities/default.json`.
