@@ -8,6 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { initImages } from "./images";
 import type { ArchivedItem, Item } from "./outline";
 import { addDays, dayKey, escapeHtml, fmtDayTitle, fmtTime, keyToDate, relativeDayName, renderInline, stripInline, todayKey } from "./text";
 import { fmtSchedule } from "./schedule";
@@ -451,6 +452,7 @@ function wire() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   wire();
+  await initImages();
   await loadData();
   listen("items-changed", () => loadData()).catch((err) => console.error("listen failed", err));
   listen("calendar-changed", () => {

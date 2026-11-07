@@ -39,13 +39,20 @@ function styled(s: string): string {
   return h;
 }
 
-const INLINE_RE = /`([^`\n]+)`|\[([^\]\n]+)\]\(((?:https?:\/\/|www\.)[^\s)]+)\)|(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+const INLINE_RE = /`([^`\n]+)`|!\[([^\]\n]*)\]\(img:([\w.-]+)\)|\[([^\]\n]+)\]\(((?:https?:\/\/|www\.)[^\s)]+)\)|(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+
+/** Turns a stored image name into a URL the window can load; set by `initImages`. */
+let imageSrc: ((name: string) => string) | null = null;
+export function setImageResolver(fn: (name: string) => string) {
+  imageSrc = fn;
+}
 
 /**
  * HTML for a row's text. Rows are stored as plain text with a small Markdown
  * subset, which is what pasted rich text is converted to and what the row shows
  * while it is being edited: `**bold**`, `*italic*` / `_italic_`, `~~struck~~`,
- * `` `code` ``, `[label](url)`, and bare URLs become links as before.
+ * `` `code` ``, `[label](url)`, `![alt](img:name)` for a pasted image, and bare
+ * URLs become links as before.
  */
 export function renderInline(text: string): string {
   let out = "";
@@ -55,7 +62,11 @@ export function renderInline(text: string): string {
     out += styled(text.slice(last, start));
     last = start + m[0].length;
     if (m[1] !== undefined) out += `<code>${escapeHtml(m[1])}</code>`;
-    else if (m[2] !== undefined) out += anchor(m[3], m[2]);
+    else if (m[3] !== undefined) {
+      out += imageSrc
+        ? `<img class="pic" src="${escapeHtml(imageSrc(m[3]))}" alt="${escapeHtml(m[2])}" loading="lazy">`
+        : `<span class="pic-missing">${escapeHtml(m[2] || "image")}</span>`;
+    } else if (m[4] !== undefined) out += anchor(m[5], m[4]);
     else {
       let url = m[0];
       const trail = /[.,;:!?)\]]+$/.exec(url);
@@ -70,6 +81,8 @@ export function renderInline(text: string): string {
 export function stripInline(text: string): string {
   return text
     .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/!\[[^\]\n]*\]\(img:[\w.-]+\)/g, "")
+    .replace(/!\[[^\]\n]*\]\(img:[\w.-]+\)/g, "")
     .replace(/\[([^\]\n]+)\]\((?:https?:\/\/|www\.)[^\s)]+\)/gi, "$1")
     .replace(/\*\*(\S(?:[^*]*?\S)?)\*\*/g, "$1")
     .replace(/~~(\S(?:[^~]*?\S)?)~~/g, "$1")

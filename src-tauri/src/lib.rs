@@ -631,6 +631,47 @@ fn open_settings(app: AppHandle) {
     app.emit_to("main", "open-settings", ()).ok();
 }
 
+/// Store a pasted image under `<data dir>\images\<sha256 prefix>.<ext>` and
+/// return its file name, which the row text references as `![](img:<name>)`.
+/// The bytes arrive as the raw IPC body (no JSON round trip); the extension
+/// comes in the `x-ext` header. Pasting the same image twice reuses one file.
+#[tauri::command]
+fn save_image(store: State<Store>, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    use sha2::Digest;
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(b) => b.as_slice(),
+        _ => return Err("save_image expects raw bytes".into()),
+    };
+    if bytes.is_empty() {
+        return Err("The clipboard image was empty".into());
+    }
+    let ext = request
+        .headers()
+        .get("x-ext")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_start_matches('.').to_ascii_lowercase())
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or_else(|| "png".into());
+    let hash = sha2::Sha256::digest(bytes);
+    let name = format!("{}.{ext}", hash.iter().take(10).map(|b| format!("{b:02x}")).collect::<String>());
+    let dir = store.dir.join("images");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create the images folder: {e}"))?;
+    let path = dir.join(&name);
+    if !path.exists() {
+        let tmp = dir.join(format!("{name}.tmp"));
+        std::fs::write(&tmp, bytes).map_err(|e| format!("Could not save the image: {e}"))?;
+        std::fs::rename(&tmp, &path).map_err(|e| format!("Could not save the image: {e}"))?;
+    }
+    Ok(name)
+}
+
+/// Absolute folder that holds pasted images, for the frontend to turn names
+/// into asset-protocol URLs.
+#[tauri::command]
+fn image_dir(store: State<Store>) -> String {
+    store.dir.join("images").to_string_lossy().into_owned()
+}
+
 /// Relay webview errors to stderr so they show up in `tauri dev` output.
 #[tauri::command]
 fn log_js(window: tauri::Window, msg: String) {
@@ -819,6 +860,8 @@ pub fn run() {
             list_items,
             set_items,
             add_item,
+            save_image,
+            image_dir,
             schedule_item,
             unschedule_item,
             list_archive,

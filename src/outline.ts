@@ -20,6 +20,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { fmtSchedule, fmtScheduleLong, parseMarker, parseSchedule, type Parsed } from "./schedule";
 import { renderInline } from "./text";
 import { parseClipboard, type PastedLine } from "./paste";
+import { clipboardImage, saveImage } from "./images";
 
 export { parseMarker };
 
@@ -524,7 +525,11 @@ function renderRow(it: Item, depth: number): HTMLElement {
   txt.spellcheck = true;
   showLinked(txt, it.text);
   txt.addEventListener("mousedown", (e) => {
-    if ((e.target as HTMLElement).closest("a")) return;
+    // Links open and pictures stay pictures; clicking either doesn't start an edit.
+    if ((e.target as HTMLElement).closest("a, img")) {
+      e.preventDefault();
+      return;
+    }
     plainText(txt);
   });
   txt.addEventListener("focus", () => plainText(txt));
@@ -704,6 +709,12 @@ function onKey(e: KeyboardEvent, it: Item, txt: HTMLElement) {
 function onPaste(e: ClipboardEvent, it: Item | null, txt: HTMLElement) {
   const dt = e.clipboardData;
   if (!dt) return;
+  const image = clipboardImage(dt);
+  if (image) {
+    e.preventDefault();
+    void pasteImage(image, it, txt);
+    return;
+  }
   const plain = dt.getData("text/plain");
   const lines = parseClipboard(dt.getData("text/html"), plain);
   if (!lines.length) return;
@@ -717,6 +728,31 @@ function onPaste(e: ClipboardEvent, it: Item | null, txt: HTMLElement) {
   }
   e.preventDefault();
   insertLines(it, txt, lines);
+}
+
+/** Store a clipboard image and put its marker in the row at the caret. The row
+ *  keeps focus meanwhile, so the marker lands where the caret was. */
+async function pasteImage(file: File, it: Item | null, txt: HTMLElement) {
+  let marker: string;
+  try {
+    marker = await saveImage(file);
+  } catch (err) {
+    console.error("save_image failed", err);
+    return;
+  }
+  if (document.activeElement === txt) {
+    document.execCommand("insertText", false, marker);
+    return;
+  }
+  // Focus moved on while the image was saving: append to the row instead.
+  if (it) {
+    it.text = (it.text ? it.text + " " : "") + marker;
+    refreshRow(it.id);
+    flushSave();
+  } else {
+    txt.textContent = (txt.textContent ?? "") + marker;
+    txt.dispatchEvent(new Event("input"));
+  }
 }
 
 /** Put pasted lines into the outline: the first joins the row at the caret, the

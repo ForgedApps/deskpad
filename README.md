@@ -36,7 +36,9 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
   `~~struck~~`, `` `code` `` and `[label](url)`. Pasting rich text (from a web
   page, Google Docs, Word, …) keeps bold, italics and links as those markers,
   turns list items into nested rows and checklist items into tasks; pasting
-  several plain lines makes a row per line, indented lines nested.
+  several plain lines makes a row per line, indented lines nested. Paste an
+  image (a screenshot, a picture copied from a page) and it is stored once and
+  shown in the row scaled to the sidebar's width.
 - **Journal**: the outline is your workspace, the journal is the record. Open
   it from the Notes header ("journal") for a resizable window with a timeline
   of days down the left and one day in the middle: that day's calendar events

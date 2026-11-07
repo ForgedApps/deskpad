@@ -19,6 +19,7 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src/main.ts` | Sidebar: clock, meetings, add-event form, alert scheduler, settings |
 | `src/outline.ts` | Notes/tasks outliner (any nesting depth, pre-order list) |
 | `src/paste.ts` | Clipboard HTML/plain text → rows with nesting and Markdown markers |
+| `src/images.ts` | Pasted images: `save_image` upload, `image_dir` + asset-protocol URLs for `renderInline` |
 | `src/journal.ts`, `journal.html` | Journal window: timeline of days, one day's events/notes/completed/scheduled, search, restore/delete of archived rows |
 | `src/text.ts` | `renderInline` (Markdown subset + links), `stripInline`, `dayKey` and other helpers shared by all windows |
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
@@ -86,7 +87,7 @@ you ever need to inspect the real folders from a sandboxed shell, a UNC path
 
 User data lives in `%APPDATA%\com.jgentes.deskpad\` (`tasks.json`,
 `archive.json`, `day_events.json`, `settings.json`, `google_tokens.json`,
-`backups\`). The installed app and the dev build share it.
+`backups\`, `images\`). The installed app and the dev build share it.
 
 1. **Register state before windows exist.** `Store` and `Google` are loaded in
    `run()` before `tauri::Builder` runs, because config windows are created
@@ -208,6 +209,17 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   from Google Docs/Word → markers) or plain lines into rows; a one-line paste
   without markers is left to the browser. `strip_inline` in `store.rs` keeps
   markers out of calendar event titles.
+- Pasted images are files, not data URLs: `onPaste` sends the clipboard file's
+  bytes as the raw IPC body to `save_image` (extension in the `x-ext` header),
+  which writes `images\<sha256 prefix>.<ext>` once (same bytes → same file)
+  and returns the name; the row text gets `![](img:<name>)`. `renderInline`
+  turns that into `<img class="pic">` whose `src` comes from the resolver
+  `initImages` installs (`convertFileSrc` on `image_dir` + name, served by
+  Tauri's asset protocol, enabled in `tauri.conf.json` with scope
+  `$APPDATA/images/**` and the `protocol-asset` cargo feature). One file per
+  image: `.row .txt img.pic { max-width: 100% }` scales it to the column, so
+  no thumbnails exist. Nothing deletes image files when rows go; they are
+  small and deduplicated. `strip_inline`/`stripInline` drop the marker.
 - Days are the record, the outline is the workspace. A row's day is derived
   from `created_at` (local), `done_at` is set/cleared by the frontend when a
   task is toggled, and `schedule.start` places it on a day. The journal

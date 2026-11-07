@@ -478,6 +478,20 @@ button.danger:hover {
 .row .txt s {
   color: var(--fg-3);
 }
+/* A pasted picture is one stored file scaled to the column it sits in, so it
+   follows the sidebar width and never overflows it. */
+.row .txt img.pic {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 4px 0 2px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.row .txt .pic-missing {
+  color: var(--fg-3);
+  font-style: italic;
+}
 .row.done .txt {
   color: var(--fg-3);
   text-decoration: line-through;

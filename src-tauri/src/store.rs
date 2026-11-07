@@ -346,6 +346,13 @@ pub fn normalize(items: &mut Vec<Item>) {
 /// The row text without its Markdown markers, for calendar event titles.
 pub fn strip_inline(text: &str) -> String {
     let mut s = text.replace("**", "").replace("~~", "").replace('`', "");
+    // ![alt](img:name) -> nothing (a title has no room for a picture)
+    while let Some(open) = s.find("![") {
+        let Some(close) = s[open..].find("](") else { break };
+        let close = open + close;
+        let Some(end) = s[close..].find(')') else { break };
+        s.replace_range(open..=close + end, "");
+    }
     // [label](url) -> label
     while let Some(open) = s.find('[') {
         let Some(close) = s[open..].find("](") else { break };
@@ -419,6 +426,7 @@ mod tests {
     #[test]
     fn strip_inline_drops_markers() {
         assert_eq!(strip_inline("**call** [Tom](https://x.y/z) re `plan` ~~old~~"), "call Tom re plan old");
+        assert_eq!(strip_inline("see ![shot](img:ab12.png) here"), "see  here");
     }
 
     #[test]

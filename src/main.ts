@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { initImages } from "./images";
 import { clearCompleted, focusItem, loadItems } from "./outline";
 import { dayKey } from "./text";
 
@@ -504,6 +505,8 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  // Pictures need the images folder before rows render; the call is local and quick.
+  await initImages();
   loadItems().catch((err) => console.error("loadItems failed", err));
   loadMeetings().catch((err) => console.error("loadMeetings failed", err));
 
