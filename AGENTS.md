@@ -212,7 +212,11 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
 - Pasted images are files, not data URLs: `onPaste` sends the clipboard file's
   bytes as the raw IPC body to `save_image` (extension in the `x-ext` header),
   which writes `images\<sha256 prefix>.<ext>` once (same bytes → same file)
-  and returns the name; the row text gets `![](img:<name>)`. `renderInline`
+  and returns the name; the row text gets `![](img:<name>)`. `pasteImage`
+  commits the row at once (blur), shows a `.pic-wait` spinner in it while
+  `pendingPics` holds the row, then splices the marker in at the old caret
+  and refreshes, so the picture appears rendered without a focus change.
+  `renderInline`
   turns that into `<img class="pic">` whose `src` comes from the resolver
   `initImages` installs (`convertFileSrc` on `image_dir` + name, served by
   Tauri's asset protocol, enabled in `tauri.conf.json` with scope

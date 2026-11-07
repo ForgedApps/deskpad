@@ -492,6 +492,17 @@ button.danger:hover {
   color: var(--fg-3);
   font-style: italic;
 }
+/* Shown in the row while a pasted picture is being stored. */
+.row .txt .pic-wait {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 6px 0 4px;
+  border: 2px solid var(--border-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
 .row.done .txt {
   color: var(--fg-3);
   text-decoration: line-through;

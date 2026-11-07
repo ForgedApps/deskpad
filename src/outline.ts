@@ -290,13 +290,19 @@ function caretOffset(el: HTMLElement): number {
 // without starting an edit.
 
 /** Show the row's text rendered (display mode); the raw text is kept on the element. */
-function showLinked(txt: HTMLElement, text: string) {
+function showLinked(txt: HTMLElement, text: string, id?: number) {
   txt.dataset.raw = text;
   if (document.activeElement === txt) {
     txt.textContent = text;
     return;
   }
   txt.innerHTML = renderInline(text);
+  if (id !== undefined && pendingPics.has(id)) {
+    const wait = document.createElement("span");
+    wait.className = "pic-wait";
+    wait.title = "Storing the picture…";
+    txt.appendChild(wait);
+  }
   txt.querySelectorAll<HTMLAnchorElement>("a[data-ext]").forEach((a) => {
     a.addEventListener("mousedown", (e) => e.preventDefault());
     a.addEventListener("click", (e) => {
@@ -477,7 +483,7 @@ function refreshRow(id: number) {
   if (!it || !row) return;
   row.className = rowClass(it);
   const txt = row.querySelector<HTMLElement>(".txt");
-  if (txt && document.activeElement !== txt) showLinked(txt, it.text);
+  if (txt && document.activeElement !== txt) showLinked(txt, it.text, it.id);
   const mark = row.querySelector<HTMLElement>(".mark");
   if (mark) {
     mark.innerHTML = it.kind === "task" ? CHECK : "";
@@ -523,7 +529,7 @@ function renderRow(it: Item, depth: number): HTMLElement {
   txt.className = "txt";
   txt.contentEditable = "plaintext-only";
   txt.spellcheck = true;
-  showLinked(txt, it.text);
+  showLinked(txt, it.text, it.id);
   txt.addEventListener("mousedown", (e) => {
     // Links open and pictures stay pictures; clicking either doesn't start an edit.
     if ((e.target as HTMLElement).closest("a, img")) {
@@ -542,7 +548,7 @@ function renderRow(it: Item, depth: number): HTMLElement {
       refreshRow(it.id);
       void commitSchedule(it, p);
     }
-    showLinked(txt, it.text);
+    showLinked(txt, it.text, it.id);
     flushSave();
   });
 
@@ -730,29 +736,45 @@ function onPaste(e: ClipboardEvent, it: Item | null, txt: HTMLElement) {
   insertLines(it, txt, lines);
 }
 
-/** Store a clipboard image and put its marker in the row at the caret. The row
- *  keeps focus meanwhile, so the marker lands where the caret was. */
+/** Rows with an image still being stored, and where in their text it goes. */
+const pendingPics = new Map<number, number>();
+
+/** Store a clipboard image and put its marker in the row at the caret.
+ *  The row is committed right away (so the picture shows rendered, not as a
+ *  raw marker) and shows a spinner until the file is stored. */
 async function pasteImage(file: File, it: Item | null, txt: HTMLElement) {
-  let marker: string;
+  const at = caretOffset(txt);
+  let target: Item;
+  if (it) {
+    target = it;
+    txt.blur();
+  } else {
+    const m = parseMarker(txt.textContent ?? "");
+    target = newItem(m.text, null, m.kind ?? "note");
+    items.push(target);
+    txt.textContent = "";
+    txt.blur();
+    scheduleSave();
+    render();
+  }
+  pendingPics.set(target.id, at);
+  refreshRow(target.id);
+  let marker: string | null = null;
   try {
     marker = await saveImage(file);
   } catch (err) {
     console.error("save_image failed", err);
-    return;
   }
-  if (document.activeElement === txt) {
-    document.execCommand("insertText", false, marker);
-    return;
-  }
-  // Focus moved on while the image was saving: append to the row instead.
-  if (it) {
-    it.text = (it.text ? it.text + " " : "") + marker;
-    refreshRow(it.id);
+  pendingPics.delete(target.id);
+  if (marker && byId(target.id)) {
+    const pos = Math.min(at, target.text.length);
+    const before = target.text.slice(0, pos);
+    const after = target.text.slice(pos);
+    target.text = before + (before && !/\s$/.test(before) ? " " : "") + marker + (after && !/^\s/.test(after) ? " " : "") + after;
+    dirty = true;
     flushSave();
-  } else {
-    txt.textContent = (txt.textContent ?? "") + marker;
-    txt.dispatchEvent(new Event("input"));
   }
+  refreshRow(target.id);
 }
 
 /** Put pasted lines into the outline: the first joins the row at the caret, the
