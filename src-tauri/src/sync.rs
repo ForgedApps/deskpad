@@ -139,7 +139,10 @@ struct SyncResponse {
 // ---------- persisted state ----------
 
 /// The Deskpad cloud this build signs in to unless told otherwise.
-pub const DEFAULT_URL: &str = "https://deskpad-cloud.jgentes.workers.dev";
+pub const DEFAULT_URL: &str = "https://app.deskpad.win";
+/// Where the server lived before it had its own domain; a PC still pointing
+/// there is moved to `DEFAULT_URL` the next time it signs in.
+pub const RETIRED_URLS: &[&str] = &["https://deskpad-cloud.jgentes.workers.dev"];
 /// How the Worker knows the device flow was started by the Windows app.
 const CLIENT_ID: &str = "deskpad-desktop";
 

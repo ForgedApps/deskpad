@@ -742,7 +742,9 @@ async fn cloud_sign_in(app: AppHandle, cloud: State<'_, sync::Cloud>) -> Result<
         return Err("A sign-in is already waiting in your browser.".into());
     }
     // A server set in cloud.json (a staging or self-hosted one) is kept.
-    let url = Some(cloud.config.lock().unwrap().url.trim_end_matches('/').to_string()).filter(|u| !u.is_empty()).unwrap_or_else(|| sync::DEFAULT_URL.to_string());
+    let url = Some(cloud.config.lock().unwrap().url.trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty() && !sync::RETIRED_URLS.contains(&u.as_str()))
+        .unwrap_or_else(|| sync::DEFAULT_URL.to_string());
     let code = sync::begin_sign_in(&url).await?;
     cloud.cancel_sign_in.store(false, Ordering::Relaxed);
     cloud.status.lock().unwrap().signing_in = Some(code.user_code.clone());

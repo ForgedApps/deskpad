@@ -6,6 +6,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
+  // The apps and the API live on app.deskpad.win; the bare domain is kept for the website.
+  "routes": [{ "pattern": "app.deskpad.win", "custom_domain": true }],
   "durable_objects": {
     "bindings": [{ "name": "TENANT", "class_name": "TenantDO" }]
   },

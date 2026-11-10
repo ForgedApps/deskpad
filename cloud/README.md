@@ -48,6 +48,12 @@ have none, and the same consent grants the Calendar access the apps use. It
 needs one OAuth client of type **Web application**. The desktop app's older
 "Desktop app" client is a different thing and cannot be reused here.
 
+This deployment: the Worker is served at `https://app.deskpad.win` (a custom
+domain route in `wrangler.jsonc`; workers.dev is off), and the Google Cloud
+project is `deskpad-win`, created with `gcloud` with the Calendar API already
+enabled. gcloud cannot create the consent screen or a sign-in OAuth client,
+so steps 2 to 6 are done in the console.
+
 In [Google Cloud Console](https://console.cloud.google.com/):
 
 1. Pick a project (the one that already has the Calendar API is fine) and make
@@ -62,7 +68,7 @@ In [Google Cloud Console](https://console.cloud.google.com/):
    `openid`, `userinfo.email`, `userinfo.profile`).
 5. **Clients → Create client → Web application**:
    - Authorized JavaScript origins: `https://<worker>` (for example
-     `https://deskpad-cloud.jgentes.workers.dev`)
+     `https://app.deskpad.win`)
    - Authorized redirect URIs: `https://<worker>/api/auth/callback/google`
 6. Copy the client ID and secret into the Worker:
 
