@@ -430,6 +430,8 @@ pub struct CloudStatus {
     pub account: String,
     /// Set while a sign-in waits for approval in the browser: the code to compare.
     pub signing_in: Option<String>,
+    /// Whether the account lets Deskpad read the calendar; `None` until asked.
+    pub calendar: Option<bool>,
     /// Unix seconds of the last cycle that completed.
     pub last_sync: Option<i64>,
     pub error: Option<String>,
@@ -478,6 +480,7 @@ impl Cloud {
             s.mass_delete = None;
             s.signing_in = None;
             s.last_sync = None;
+            s.calendar = None;
             if !s.configured {
                 s.account.clear();
             }
@@ -598,6 +601,33 @@ pub async fn finish_sign_in(url: &str, code: &DeviceCode, cancel: &AtomicBool) -
         }
     }
     Err("The sign-in took too long. Try again.".into())
+}
+
+/// What the account's Google grant allows, and a token to use it with.
+#[derive(Deserialize)]
+pub struct GoogleAccess {
+    pub access_token: String,
+    pub expires_at: i64,
+    #[serde(default)]
+    pub calendar_read: bool,
+    #[serde(default)]
+    pub calendar_write: bool,
+}
+
+/// Ask the server for a current Google access token for this account.
+/// `Ok(None)` means the account has no Google access (or is signed out).
+pub async fn google_access(cfg: &CloudConfig) -> Result<Option<GoogleAccess>, String> {
+    let res = auth_client()?
+        .get(format!("{}/api/v1/google-token", cfg.base()))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach the Deskpad server: {}", e.without_url()))?;
+    match res.status().as_u16() {
+        200 => Ok(Some(res.json().await.map_err(|e| format!("The Deskpad server sent something unexpected: {e}"))?)),
+        401 | 404 => Ok(None),
+        code => Err(format!("The Deskpad server answered {code}.")),
+    }
 }
 
 /// End this device's session on the server (best effort).

@@ -22,8 +22,9 @@
     // any server reachable by others: whoever signs up first would inherit that tenant's data.
     "FIRST_TENANT": ""
   },
-  // Secrets (wrangler secret put): BETTER_AUTH_SECRET, ADMIN_KEY; optional GOOGLE_CLIENT_ID,
-  // GOOGLE_CLIENT_SECRET; DEVICE_TOKENS only for tests. Local dev reads them from .dev.vars.
+  // Secrets (wrangler secret put): BETTER_AUTH_SECRET, ADMIN_KEY, GOOGLE_CLIENT_ID,
+  // GOOGLE_CLIENT_SECRET (see README: Google sign-in). DEVICE_TOKENS and ALLOW_PASSWORD
+  // are for the automated tests only. Local dev reads all of these from .dev.vars.
   "env": {
     "staging": {
       "name": "deskpad-cloud-staging",

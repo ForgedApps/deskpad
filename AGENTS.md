@@ -206,8 +206,16 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   `log_js`, which prints `[js:<label>]` in the dev terminal. Check there first
   when something looks inert.
 - Google: read scope `calendar.readonly` plus write scope `calendar.events`.
-  Tokens record the granted scope; `can_write()` gates event creation and a
-  read-only grant produces a "disconnect and reconnect" message.
+  Calendar access normally comes with the Deskpad account: signing in is
+  "Continue with Google" on the Worker, whose consent includes both scopes,
+  and `use_account_calendar` in `lib.rs` (called at the top of every command
+  that talks to Google) keeps a short-lived token from
+  `GET /api/v1/google-token` in `Google.account`. The older direct connection
+  (this PC's own Desktop OAuth client and `google_tokens.json`) still works
+  and is used only when no account token is present; in Settings it sits
+  under "Connect a calendar without an account". `google_status` means "a
+  calendar is available either way", `google_direct` means the direct
+  connection exists. `can_write()` gates event creation.
 - Alert timing lives in `main.ts` (`ALERT_LEAD` = 120 s, `ALERT_GRACE` = 300 s).
 - Calendar windows are chosen by the frontend: `get_meetings(from, to)` takes
   unix seconds, and `main.ts` always keeps today + tomorrow loaded (`meetings`,
@@ -256,7 +264,9 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   the PC is signed in. Signing in is the device flow (`begin_sign_in`,
   `finish_sign_in`, command `cloud_sign_in`): the app opens `/device` in the
   browser, shows the code to compare, and receives a Better Auth session
-  token; nothing is typed into the app. A 401 drops the dead token so
+  token; nothing is typed into the app. The browser step is Google only:
+  sign-in and sign-up are one button, by design. Do not add a second way in
+  or a separate registration path. A 401 drops the dead token so
   Settings offers Sign in again. `Item.rank` orders siblings across devices: the list
   order is the truth locally (`rank::repair` in `save_items` re-ranks only
   moved or new rows), and after a pull siblings are sorted by rank. The

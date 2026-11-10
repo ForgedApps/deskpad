@@ -720,6 +720,30 @@ kbd {
   background: var(--bg-3);
   border-radius: 8px;
 }
+.advanced {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+.advanced summary {
+  cursor: pointer;
+  color: var(--fg-2);
+}
+.advanced[open] summary {
+  margin-bottom: 8px;
+}
+.advanced > div {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.advanced > .google-row {
+  flex-direction: row;
+}
+#cloud-calendar.hidden {
+  display: none;
+}
 .cloud-lead {
   display: block;
   margin-bottom: 8px;

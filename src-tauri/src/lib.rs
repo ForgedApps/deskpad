@@ -24,6 +24,41 @@ const CAPTURE_SHORTCUT: &str = "ctrl+space";
 #[derive(Default)]
 struct SidebarHidden(Mutex<bool>);
 
+// ---------- Calendar access through the Deskpad account ----------
+
+/// Make sure the Google client has what the signed-in account provides: a
+/// current access token, fetched from the Deskpad server when missing or about
+/// to expire, or nothing when this PC is signed out or the account has no
+/// calendar access. Called before anything that talks to Google; cheap when
+/// the token is fresh.
+async fn use_account_calendar(cloud: &sync::Cloud, google: &Google) {
+    let cfg = cloud.config.lock().unwrap().clone();
+    if !cfg.ready() {
+        google.set_account(None);
+        return;
+    }
+    if google.account_fresh() {
+        return;
+    }
+    match sync::google_access(&cfg).await {
+        Ok(Some(a)) if a.calendar_read => {
+            google.set_account(Some(google::AccountToken { access_token: a.access_token, expires_at: a.expires_at, can_write: a.calendar_write }));
+            cloud.status.lock().unwrap().calendar = Some(true);
+        }
+        Ok(Some(_)) => {
+            // Signed in, but the calendar boxes were left unticked at Google.
+            google.set_account(None);
+            cloud.status.lock().unwrap().calendar = Some(false);
+        }
+        Ok(None) => {
+            google.set_account(None);
+            cloud.status.lock().unwrap().calendar = Some(false);
+        }
+        // Offline or the server is down: keep what we have; it works until it expires.
+        Err(e) => eprintln!("[calendar] {e}"),
+    }
+}
+
 // ---------- Items (notes & tasks) ----------
 
 #[tauri::command]
@@ -138,11 +173,13 @@ async fn schedule_item(
     app: AppHandle,
     store: State<'_, Store>,
     google: State<'_, Google>,
+    cloud: State<'_, sync::Cloud>,
     id: u64,
     start: i64,
     end: i64,
     all_day: bool,
 ) -> Result<Item, String> {
+    use_account_calendar(&cloud, &google).await;
     if !google.connected() {
         return Err("Connect Google Calendar in Settings to put tasks on your calendar.".into());
     }
@@ -182,8 +219,10 @@ async fn unschedule_item(
     app: AppHandle,
     store: State<'_, Store>,
     google: State<'_, Google>,
+    cloud: State<'_, sync::Cloud>,
     id: u64,
 ) -> Result<Item, String> {
+    use_account_calendar(&cloud, &google).await;
     let existing = {
         let items = store.items.lock().unwrap();
         let it = items.iter().find(|i| i.id == id).ok_or("That row no longer exists.")?;
@@ -325,9 +364,11 @@ struct MeetingsResult {
 async fn get_meetings(
     store: State<'_, Store>,
     google: State<'_, Google>,
+    cloud: State<'_, sync::Cloud>,
     from: i64,
     to: i64,
 ) -> Result<MeetingsResult, String> {
+    use_account_calendar(&cloud, &google).await;
     if !google.connected() {
         return Ok(MeetingsResult { source: "none", meetings: vec![] });
     }
@@ -343,15 +384,24 @@ async fn get_meetings(
     Ok(MeetingsResult { source: "google", meetings })
 }
 
+/// Whether a calendar is available, through the account or the direct connection.
 #[tauri::command]
-fn google_status(google: State<Google>) -> bool {
-    google.connected()
+async fn google_status(google: State<'_, Google>, cloud: State<'_, sync::Cloud>) -> Result<bool, String> {
+    use_account_calendar(&cloud, &google).await;
+    Ok(google.connected())
 }
 
-/// Whether events can be created (Google connected with the write scope).
+/// Whether this PC has its own direct Google connection (the advanced setup).
 #[tauri::command]
-fn google_can_write(google: State<Google>) -> bool {
-    google.connected() && google.can_write()
+fn google_direct(google: State<Google>) -> bool {
+    google.connected_directly()
+}
+
+/// Whether events can be created (the grant in use has the write scope).
+#[tauri::command]
+async fn google_can_write(google: State<'_, Google>, cloud: State<'_, sync::Cloud>) -> Result<bool, String> {
+    use_account_calendar(&cloud, &google).await;
+    Ok(google.connected() && google.can_write())
 }
 
 /// Create an event on the primary Google calendar. `start` is unix seconds.
@@ -359,10 +409,12 @@ fn google_can_write(google: State<Google>) -> bool {
 async fn create_event(
     store: State<'_, Store>,
     google: State<'_, Google>,
+    cloud: State<'_, sync::Cloud>,
     title: String,
     start: i64,
     duration_min: i64,
 ) -> Result<calendar::Meeting, String> {
+    use_account_calendar(&cloud, &google).await;
     if !google.connected() {
         return Err("Connect Google Calendar in Settings to add events.".into());
     }
@@ -703,7 +755,9 @@ async fn cloud_sign_in(app: AppHandle, cloud: State<'_, sync::Cloud>) -> Result<
     match result {
         Ok(token) => {
             cloud.set_config(sync::CloudConfig { url, token });
+            use_account_calendar(&cloud, &app.state::<Google>()).await;
             app.emit("cloud-status", ()).ok();
+            app.emit("calendar-changed", ()).ok();
             Ok(())
         }
         Err(e) => {
@@ -726,7 +780,9 @@ async fn cloud_sign_out(app: AppHandle, cloud: State<'_, sync::Cloud>) -> Result
         sync::sign_out(&config).await;
     }
     cloud.set_config(sync::CloudConfig { url: config.url, token: String::new() });
+    app.state::<Google>().set_account(None);
     app.emit("cloud-status", ()).ok();
+    app.emit("calendar-changed", ()).ok();
     Ok(())
 }
 
@@ -953,6 +1009,7 @@ pub fn run() {
             set_settings,
             get_meetings,
             google_status,
+            google_direct,
             google_can_write,
             create_event,
             show_alert,

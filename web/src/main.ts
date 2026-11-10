@@ -13,64 +13,58 @@ import * as store from "./store";
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
 // ---------- sign-in ----------
+// One way in: Google. Signing in and signing up are the same step.
 
-let signUp = false;
-
-async function authApi(path: string, body: unknown): Promise<Record<string, unknown>> {
-  const res = await fetch(`/api/auth${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), credentials: "same-origin" });
-  const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!res.ok) throw new Error(String(data?.message ?? `Something went wrong (${res.status}).`));
-  return data ?? {};
-}
-
-function setSignInMode(next: boolean) {
-  signUp = next;
-  $("#signin-name-field").hidden = !signUp;
-  $("#signin-submit").textContent = signUp ? "Create account" : "Sign in";
-  $("#signin-lead").textContent = signUp ? "Create your Deskpad account." : "Sign in to see your notes.";
-  $("#signin-mode-q").textContent = signUp ? "Already have an account?" : "No account yet?";
-  $("#signin-mode").textContent = signUp ? "Sign in" : "Create one";
-  $<HTMLInputElement>("#signin-password").autocomplete = signUp ? "new-password" : "current-password";
-  $("#signin-error").textContent = "";
+/** What a failed return from Google means, in plain words. */
+function explain(code: string | null): string {
+  if (!code) return "";
+  if (/signup|unable_to_create_user|forbidden/i.test(code)) return "This Deskpad server isn't taking new accounts.";
+  if (/access_denied/i.test(code)) return "Google sign-in was cancelled.";
+  return "Google sign-in didn't complete. Try again.";
 }
 
 function showSignIn(message = "") {
   $("#boot").hidden = true;
   $("#app").hidden = true;
   $("#signin").hidden = false;
-  $("#signin-error").textContent = message;
+  if (message) $("#signin-error").textContent = message;
 }
 
 function wireSignIn() {
-  $("#signin-mode").addEventListener("click", () => setSignInMode(!signUp));
-  $("#signin").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const btn = $<HTMLButtonElement>("#signin-submit");
+  const btn = $<HTMLButtonElement>("#signin-google");
+  const error = $("#signin-error");
+  // Back from Google with a problem: say so, and tidy the address.
+  const failed = new URLSearchParams(location.search).get("error");
+  if (failed) {
+    error.textContent = explain(failed);
+    history.replaceState(null, "", "/");
+  }
+  btn.addEventListener("click", async () => {
     btn.disabled = true;
-    $("#signin-error").textContent = "";
+    error.textContent = "";
     try {
-      const email = $<HTMLInputElement>("#signin-email").value.trim();
-      const password = $<HTMLInputElement>("#signin-password").value;
-      if (signUp) await authApi("/sign-up/email", { email, password, name: $<HTMLInputElement>("#signin-name").value.trim() || email.split("@")[0] });
-      else await authApi("/sign-in/email", { email, password });
-      location.reload();
+      const res = await fetch("/api/auth/sign-in/social", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "google", callbackURL: "/", errorCallbackURL: "/" }),
+        credentials: "same-origin",
+      });
+      const data = (await res.json().catch(() => null)) as { url?: string; message?: string } | null;
+      if (!res.ok || !data?.url) throw new Error(data?.message ?? "Google sign-in isn't set up on this server yet.");
+      location.href = data.url;
     } catch (err) {
-      $("#signin-error").textContent = err instanceof TypeError ? "You're offline. Connect and try again." : err instanceof Error ? err.message : String(err);
-    } finally {
+      error.textContent = err instanceof TypeError ? "You're offline. Connect and try again." : err instanceof Error ? err.message : String(err);
       btn.disabled = false;
-    }
-  });
-  $("#signin-google").addEventListener("click", async () => {
-    try {
-      const r = await authApi("/sign-in/social", { provider: "google", callbackURL: "/" });
-      if (typeof r.url === "string") location.href = r.url;
-    } catch (err) {
-      $("#signin-error").textContent = err instanceof Error ? err.message : String(err);
     }
   });
   fetch("/api/v1/auth-methods")
     .then((r) => r.json())
-    .then((m: { google?: boolean }) => ($("#signin-google").hidden = !m.google))
+    .then((m: { google?: boolean }) => {
+      if (!m.google) {
+        btn.disabled = true;
+        error.textContent = "Google sign-in isn't set up on this server yet.";
+      }
+    })
     .catch(() => {});
 }
 

@@ -34,7 +34,21 @@ pub struct Tokens {
 
 pub struct Google {
     path: PathBuf,
+    /// The direct connection: this PC's own OAuth client and refresh token
+    /// (Settings → advanced). Used when no Deskpad account provides access.
     tokens: Mutex<Option<Tokens>>,
+    /// Access through the signed-in Deskpad account: a short-lived Google
+    /// token the Deskpad server hands out and refreshes. Preferred when present.
+    account: Mutex<Option<AccountToken>>,
+}
+
+/// A Google access token obtained through the Deskpad account.
+#[derive(Clone)]
+pub struct AccountToken {
+    pub access_token: String,
+    /// Unix seconds.
+    pub expires_at: i64,
+    pub can_write: bool,
 }
 
 #[derive(Deserialize)]
@@ -98,20 +112,39 @@ impl Google {
     pub fn load(dir: &std::path::Path) -> Self {
         let path = dir.join("google_tokens.json");
         let tokens = fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok());
-        Self { path, tokens: Mutex::new(tokens) }
+        Self { path, tokens: Mutex::new(tokens), account: Mutex::new(None) }
     }
 
+    /// Whether the calendar can be read at all, through the account or directly.
     pub fn connected(&self) -> bool {
+        self.account.lock().unwrap().is_some() || self.connected_directly()
+    }
+
+    /// Whether this PC has its own direct connection (the advanced setup).
+    pub fn connected_directly(&self) -> bool {
         self.tokens.lock().unwrap().as_ref().map(|t| !t.refresh_token.is_empty()).unwrap_or(false)
     }
 
-    /// Whether the stored grant allows creating events.
+    /// Whether the grant in use allows creating events.
     pub fn can_write(&self) -> bool {
+        if let Some(a) = self.account.lock().unwrap().as_ref() {
+            return a.can_write;
+        }
         self.tokens
             .lock()
             .unwrap()
             .as_ref()
             .is_some_and(|t| t.scope.split_whitespace().any(|s| s == WRITE_SCOPE))
+    }
+
+    /// Set or clear the access that comes with the Deskpad account.
+    pub fn set_account(&self, token: Option<AccountToken>) {
+        *self.account.lock().unwrap() = token;
+    }
+
+    /// Whether the account's token is present and good for at least another minute.
+    pub fn account_fresh(&self) -> bool {
+        self.account.lock().unwrap().as_ref().is_some_and(|a| a.expires_at > Utc::now().timestamp() + 60)
     }
 
     fn save(&self, t: Option<Tokens>) {
@@ -256,6 +289,16 @@ impl Google {
     }
 
     async fn access_token(&self, client_id: &str, client_secret: &str) -> Result<String, String> {
+        // The account's token first; `lib.rs` keeps it fresh before each call.
+        let account = self.account.lock().unwrap().clone();
+        if let Some(a) = account {
+            if a.expires_at > Utc::now().timestamp() {
+                return Ok(a.access_token);
+            }
+            if !self.connected_directly() {
+                return Err("Could not reach Deskpad to renew calendar access. It will retry.".into());
+            }
+        }
         let current = self.tokens.lock().unwrap().clone().ok_or("Not connected to Google.")?;
         if current.expires_at > Utc::now().timestamp() {
             return Ok(current.access_token);

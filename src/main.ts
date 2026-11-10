@@ -42,7 +42,10 @@ let meetings: Meeting[] = [];
 let dayMeetings: Meeting[] = [];
 /** 0 = today, -1 = yesterday, 1 = tomorrow, ... */
 let dayOffset = 0;
+/** A calendar is available: through the signed-in account, or the direct connection. */
 let googleConnected = false;
+/** This PC's own direct Google connection (Settings → advanced). */
+let googleDirect = false;
 
 /** Local time (unix seconds) at `hour` o'clock on today plus `offset` days.
  *  Goes through Date so DST-change days (23 or 25 hours) come out right. */
@@ -128,7 +131,7 @@ function renderMeetings() {
   const now = Math.floor(Date.now() / 1000);
   renderCalHeader();
   if (!googleConnected) {
-    el.innerHTML = `<div class="empty">No calendar connected. <a id="link-settings">Connect Google Calendar</a> to see your day.</div>`;
+    el.innerHTML = `<div class="empty">No calendar yet. <a id="link-settings">Sign in with Google</a> to see your day.</div>`;
     el.querySelector("#link-settings")?.addEventListener("click", openSettings);
     return;
   }
@@ -266,7 +269,7 @@ function toggleEventForm(open?: boolean) {
   const show = open ?? form.hidden;
   form.hidden = !show;
   if (!show) return;
-  $("#ev-error").textContent = googleConnected ? "" : "Connect Google Calendar in Settings to add events.";
+  $("#ev-error").textContent = googleConnected ? "" : "Sign in with Google in Settings to add events.";
   const now = new Date(Date.now() + 15 * 60_000);
   now.setMinutes(Math.ceil(now.getMinutes() / 15) * 15, 0, 0);
   if (dayOffset !== 0) now.setDate(now.getDate() + dayOffset);
@@ -353,8 +356,24 @@ function onAlertAction(a: { id: string; action: string; minutes: number }) {
 // ---------- settings ----------
 
 function renderGoogleState() {
-  $("#google-connected").classList.toggle("hidden", !googleConnected);
-  $("#google-disconnected").classList.toggle("hidden", googleConnected);
+  $("#google-connected").classList.toggle("hidden", !googleDirect);
+  $("#google-disconnected").classList.toggle("hidden", googleDirect);
+}
+
+/** Ask the backend where the calendar stands (it changes on sign-in, sign-out
+ *  and connect) and redraw whatever depends on it. */
+async function refreshCalendarState() {
+  try {
+    const [any, direct] = await Promise.all([invoke<boolean>("google_status"), invoke<boolean>("google_direct")]);
+    const changed = any !== googleConnected;
+    googleConnected = any;
+    googleDirect = direct;
+    renderGoogleState();
+    return changed;
+  } catch (err) {
+    console.error("google_status failed", err);
+    return false;
+  }
 }
 
 function openSettings() {
@@ -370,6 +389,12 @@ function openSettings() {
   $("#settings-error").textContent = "";
   $("#settings-saved").textContent = "";
   renderGoogleState();
+  // An existing direct connection should be visible, not folded away.
+  const direct = $<HTMLDetailsElement>("#google-direct");
+  direct.open = googleDirect;
+  void refreshCalendarState().then(() => {
+    if (googleDirect) direct.open = true;
+  });
   void renderCloud();
   $("#settings").classList.remove("hidden");
 }
@@ -433,8 +458,7 @@ async function connectGoogle() {
   btn.textContent = "Waiting for sign-in in your browser…";
   try {
     await invoke("google_connect");
-    googleConnected = true;
-    renderGoogleState();
+    await refreshCalendarState();
     loadMeetings(true);
   } catch (err) {
     errEl.textContent = String(err);
@@ -446,8 +470,7 @@ async function connectGoogle() {
 
 async function disconnectGoogle() {
   await invoke("google_disconnect");
-  googleConnected = false;
-  renderGoogleState();
+  await refreshCalendarState();
   loadMeetings(true);
 }
 
@@ -519,9 +542,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   // like an unconfigured app, and nothing below runs until settings are real.
   for (let attempt = 0; ; attempt++) {
     try {
-      [settings, googleConnected] = await Promise.all([
+      [settings, googleConnected, googleDirect] = await Promise.all([
         invoke<Settings>("get_settings"),
         invoke<boolean>("google_status"),
+        invoke<boolean>("google_direct"),
       ]);
       break;
     } catch (err) {
@@ -551,7 +575,11 @@ window.addEventListener("DOMContentLoaded", async () => {
   listen("items-changed", () => loadItems()).catch((err) => console.error("listen failed", err));
   listen<number>("focus-item", (e) => focusItem(e.payload)).catch((err) => console.error("listen failed", err));
   // A task was put on (or taken off) the calendar from the outline or capture.
-  listen("calendar-changed", () => loadMeetings(true)).catch((err) => console.error("listen failed", err));
+  // Also fired on sign-in and sign-out, when the calendar may have appeared or gone.
+  listen("calendar-changed", async () => {
+    await refreshCalendarState();
+    loadMeetings(true);
+  }).catch((err) => console.error("listen failed", err));
   listen("open-settings", () => openSettings()).catch((err) => console.error("listen failed", err));
   listen<{ id: string; action: string; minutes: number }>("alert-action", (e) => onAlertAction(e.payload)).catch((err) =>
     console.error("listen failed", err),

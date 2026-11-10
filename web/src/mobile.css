@@ -265,37 +265,28 @@ body.web .row .when {
   margin: 0 0 4px;
   color: var(--fg-2);
 }
-.signin label {
+.signin .google {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 13px;
-  color: var(--fg-2);
-}
-.signin input {
-  font: inherit;
-  font-size: 16px;
-  padding: 12px;
-  color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.signin input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.signin button.primary,
-.signin #signin-google {
-  padding: 13px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 14px;
   font-size: 16px;
   font-weight: 600;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
   border-radius: 10px;
+}
+.signin .google svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.signin .google:active {
+  background: var(--active);
 }
 .signin .error {
   min-height: 20px;
-  font-size: 14px;
-}
-.signin .foot {
   font-size: 14px;
 }

@@ -6,7 +6,7 @@
 // See docs/sync-architecture.md.
 
 import { IMAGE_MAX_BYTES, IMAGE_NAME, type SyncRequest } from "../../shared/protocol";
-import { callerFromSession, createAuth, migrate, type Caller } from "./auth";
+import { callerFromSession, createAuth, googleConfigured, googleToken, migrate, type Caller } from "./auth";
 import { TenantDO } from "./tenant-do";
 
 export { TenantDO };
@@ -80,7 +80,7 @@ export default {
     const path = url.pathname;
     if (path === "/api/v1/health") return json({ ok: true });
     // What the sign-in pages may offer; nothing secret.
-    if (path === "/api/v1/auth-methods") return json({ google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET), password: true });
+    if (path === "/api/v1/auth-methods") return json({ google: googleConfigured(env) });
 
     // Better Auth's own endpoints: sign-in, sign-up, sessions, the device flow.
     if (path.startsWith("/api/auth/")) {
@@ -124,6 +124,12 @@ export default {
 
       if (path === "/api/v1/export" && req.method === "GET") {
         return json(await tenantStub(env, caller).exportAll(caller.tenant));
+      }
+
+      // The account's Google access, for the calendar. Only a session has one.
+      if (path === "/api/v1/google-token" && req.method === "GET") {
+        const token = env.BETTER_AUTH_SECRET ? await googleToken(createAuth(env, url.origin), env, req) : null;
+        return token ? json(token) : fail(404, "This account has no Google access");
       }
 
       if (path === "/api/v1/status" && req.method === "GET") {

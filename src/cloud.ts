@@ -12,6 +12,8 @@ interface CloudStatus {
   device: string;
   account: string;
   signing_in: string | null;
+  /** Whether the account gives calendar access; null until the backend has asked. */
+  calendar: boolean | null;
   last_sync: number | null;
   error: string | null;
   rows: number;
@@ -54,6 +56,7 @@ export async function renderCloud() {
   } else {
     state.textContent = `${who} · syncing…`;
   }
+  $("#cloud-calendar").classList.toggle("hidden", s.calendar !== false);
   const force = $<HTMLButtonElement>("#btn-cloud-force");
   force.classList.toggle("hidden", !s.mass_delete);
   if (s.mass_delete) force.textContent = `Delete those ${s.mass_delete} rows in the cloud too`;

@@ -3,6 +3,12 @@
 // The data plane never sees any of this. `callerFromSession` turns a session
 // (the web app's cookie, or the desktop's bearer token from the device flow)
 // into the { tenant, device } pair every handler in index.ts works from.
+//
+// There is one way in: "Continue with Google". Signing in and signing up are
+// the same step (an unknown Google account gets a Deskpad account), and the
+// same consent asks for the Calendar access the apps need, so the calendar is
+// not a second connection. Google's tokens stay here, encrypted; a signed-in
+// device asks for a short-lived access token when it needs one (`googleToken`).
 
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
@@ -20,17 +26,39 @@ export interface Caller {
   account?: string;
 }
 
+/** Read every calendar the user has; create and change events. */
+export const CALENDAR_READ = "https://www.googleapis.com/auth/calendar.readonly";
+export const CALENDAR_WRITE = "https://www.googleapis.com/auth/calendar.events";
+
+export const googleConfigured = (env: Env) => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+
 /** Bindings exist only inside a request, so the instance is built per request. */
 export function createAuth(env: Env, origin: string) {
-  const google = env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET ? { google: { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET } } : {};
+  const google = googleConfigured(env)
+    ? {
+        google: {
+          clientId: env.GOOGLE_CLIENT_ID,
+          clientSecret: env.GOOGLE_CLIENT_SECRET,
+          scope: [CALENDAR_READ, CALENDAR_WRITE],
+          // Offline access plus a consent prompt is what makes Google hand
+          // over a refresh token every time, not only on the first sign-in.
+          accessType: "offline" as const,
+          prompt: "select_account consent" as const,
+        },
+      }
+    : {};
   return betterAuth({
     baseURL: origin,
     basePath: "/api/auth",
     secret: env.BETTER_AUTH_SECRET,
     database: env.DB,
     trustedOrigins: [origin],
-    emailAndPassword: { enabled: true, minPasswordLength: 10, autoSignIn: true },
+    // Passwords exist only for the automated tests (ALLOW_PASSWORD=1 in their
+    // environment); no page offers them.
+    emailAndPassword: { enabled: env.ALLOW_PASSWORD === "1", minPasswordLength: 10, autoSignIn: true },
     socialProviders: google,
+    // Google's refresh token is a standing key to someone's calendar.
+    account: { encryptOAuthTokens: true },
     session: {
       // A device stays signed in as long as it is used at least once in 90 days.
       expiresIn: 60 * 60 * 24 * 90,
@@ -122,4 +150,26 @@ export async function callerFromSession(auth: Auth, env: Env, req: Request): Pro
   // One session is one device; its id names the device in the tenant's rows.
   const device = got.session.id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || "device";
   return { tenant, device, account: got.user.email };
+}
+
+/**
+ * A current Google access token for the signed-in account, refreshed here if
+ * it had expired, and what it may be used for. Null when the account has no
+ * Google grant (or Google no longer honours it).
+ */
+export async function googleToken(auth: Auth, env: Env, req: Request): Promise<{ access_token: string; expires_at: number; calendar_read: boolean; calendar_write: boolean } | null> {
+  try {
+    const got = await auth.api.getSession({ headers: req.headers });
+    if (!got?.user?.id) return null;
+    // The account is looked up by the session's own user, never by anything the caller sends.
+    const account = await env.DB.prepare("SELECT id FROM account WHERE userId = ? AND providerId = 'google' LIMIT 1").bind(got.user.id).first<{ id: string }>();
+    if (!account) return null;
+    const t = await auth.api.getAccessToken({ body: { accountId: account.id }, headers: req.headers });
+    if (!t?.accessToken) return null;
+    const scopes: string[] = t.scopes ?? [];
+    const expires = t.accessTokenExpiresAt ? Math.floor(new Date(t.accessTokenExpiresAt).getTime() / 1000) : Math.floor(Date.now() / 1000) + 300;
+    return { access_token: t.accessToken, expires_at: expires, calendar_read: scopes.includes(CALENDAR_READ), calendar_write: scopes.includes(CALENDAR_WRITE) };
+  } catch {
+    return null;
+  }
 }

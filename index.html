@@ -100,34 +100,13 @@
         </div>
 
         <fieldset>
-          <legend>Google Calendar</legend>
-          <div id="google-connected" class="google-row hidden">
-            <span class="ok">● Connected</span>
-            <button type="button" id="btn-google-disconnect">Disconnect</button>
-          </div>
-          <div id="google-disconnected">
-            <label>
-              OAuth client ID
-              <input id="s-gid" placeholder="…apps.googleusercontent.com" />
-            </label>
-            <label>
-              OAuth client secret
-              <input id="s-gsecret" type="password" placeholder="GOCSPX-…" />
-              <small>
-                Create a <b>Desktop app</b> OAuth client in Google Cloud Console (APIs &amp; Services →
-                Credentials) with the Calendar API enabled, then paste both values and connect.
-                Shows all calendars you have checked in Google Calendar, with Meet join links.
-              </small>
-            </label>
-            <button type="button" id="btn-google-connect" class="primary">Connect Google Calendar</button>
-            <div id="google-error" class="error"></div>
-          </div>
-        </fieldset>
-
-        <fieldset>
-          <legend>Cloud sync</legend>
+          <legend>Account</legend>
           <div id="cloud-on" class="hidden">
             <div id="cloud-state" class="cloud-state"></div>
+            <div id="cloud-calendar" class="cloud-state error hidden">
+              Google didn't give Deskpad access to your calendar. Sign out, sign in again and
+              leave the calendar boxes ticked.
+            </div>
             <div class="google-row">
               <button type="button" id="btn-cloud-sync">Sync now</button>
               <button type="button" id="btn-cloud-force" class="danger hidden"></button>
@@ -144,13 +123,39 @@
           </div>
           <div id="cloud-off">
             <small class="cloud-lead">
-              Backs up your notes, tasks and pictures and keeps your devices in step. Everything
-              stays on this PC as well and keeps working offline.
+              One sign-in shows your Google Calendar here, backs up your notes, tasks and pictures,
+              and keeps your devices in step. Everything stays on this PC as well and keeps working
+              offline.
             </small>
-            <button type="button" id="btn-cloud-signin" class="primary">Sign in</button>
+            <button type="button" id="btn-cloud-signin" class="primary">Sign in with Google</button>
             <div id="cloud-error" class="error"></div>
           </div>
         </fieldset>
+
+        <details id="google-direct" class="advanced">
+          <summary>Connect a calendar without an account</summary>
+          <div id="google-connected" class="google-row hidden">
+            <span class="ok">● Connected directly on this PC</span>
+            <button type="button" id="btn-google-disconnect">Disconnect</button>
+          </div>
+          <div id="google-disconnected">
+            <label>
+              OAuth client ID
+              <input id="s-gid" placeholder="…apps.googleusercontent.com" />
+            </label>
+            <label>
+              OAuth client secret
+              <input id="s-gsecret" type="password" placeholder="GOCSPX-…" />
+              <small>
+                For using the calendar with no Deskpad account: create a <b>Desktop app</b> OAuth
+                client in Google Cloud Console with the Calendar API enabled, then paste both
+                values and connect. When you are signed in above, the account is used instead.
+              </small>
+            </label>
+            <button type="button" id="btn-google-connect">Connect Google Calendar</button>
+            <div id="google-error" class="error"></div>
+          </div>
+        </details>
 
         <label>
           Show tomorrow's events that start before

@@ -420,11 +420,18 @@ Deliberate differences from the design:
   membership kept apart; one default tenant per user, created on first use)
   with a few lines of SQL instead of a plugin's hooks. Moving to the plugin
   later is a table copy. The tenant id is random (`t_` + 24 hex).
-- **Email and password first** (§6 said Google first). It needs no outside
-  setup; Google appears on the sign-in pages once `GOOGLE_CLIENT_ID` and
-  `GOOGLE_CLIENT_SECRET` are set (a *web* OAuth client with redirect
-  `<origin>/api/auth/callback/google`; the desktop's Calendar client is a
-  different, loopback-only one).
+- **Google is the only sign-in** (§6). One button signs in or creates the
+  account; there is no separate sign-up and no password (email and password
+  survive only behind `ALLOW_PASSWORD=1` for the tests). It needs a *web*
+  OAuth client (`cloud/README.md` has the steps).
+- **The calendar comes with the account** (§9 deferred this). The sign-in
+  consent also asks for `calendar.readonly` and `calendar.events` with
+  offline access. Google's tokens stay in D1, encrypted
+  (`account.encryptOAuthTokens`); a signed-in device asks
+  `GET /api/v1/google-token` for a short-lived access token, which the
+  Worker refreshes as needed, and then talks to Google directly as before.
+  The desktop's own OAuth client remains as an optional, account-free
+  fallback under Settings → "Connect a calendar without an account".
 - **Sign-up gate**: the `SIGNUP` var is `first` (only while no account
   exists), `open` or `closed`, enforced in a `user.create` hook, instead of
   an email allowlist.
@@ -438,11 +445,11 @@ Deliberate differences from the design:
   `src/outline.ts`, `text.ts`, `paste.ts`, `schedule.ts` and `images.ts` run
   unchanged; `web/src/store.ts` answers the commands and `web/src/core.ts`
   is the TypeScript twin of the Rust merge code.
-- **The web app is notes and tasks only**: no calendar, journal, or day
-  events (§9). A time typed there stays on the row and syncs; the desktop
-  owns Google Calendar. Pictures need a connection to add; they are cached
+- **The web app is notes and tasks only** for now: no calendar, journal, or
+  day events. A time typed there stays on the row and syncs. The account's
+  Google token is available to it, so a calendar view there is UI work only. Pictures need a connection to add; they are cached
   for offline viewing.
 
 Not built: nightly exports and GC (§7), quotas beyond a row cap (§8),
-passkeys and email verification, password reset (needs an email provider),
-live push, a sign-up page for the public.
+passkeys, live push, a calendar in the web app, Google's app verification
+(needed before `SIGNUP` can be `open` for the public).

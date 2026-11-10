@@ -24,7 +24,7 @@ const table = {
 const state = mkdtempSync(join(tmpdir(), "deskpad-cloud-test-"));
 const vars = join(state, "vars");
 const ADMIN = randomBytes(24).toString("hex");
-writeFileSync(vars, `DEVICE_TOKENS=${JSON.stringify(table)}\nBETTER_AUTH_SECRET=${randomBytes(32).toString("hex")}\nADMIN_KEY=${ADMIN}\n`);
+writeFileSync(vars, `DEVICE_TOKENS=${JSON.stringify(table)}\nBETTER_AUTH_SECRET=${randomBytes(32).toString("hex")}\nADMIN_KEY=${ADMIN}\nALLOW_PASSWORD=1\nGOOGLE_CLIENT_ID=test-client.apps.googleusercontent.com\nGOOGLE_CLIENT_SECRET=test-secret\n`);
 
 let failures = 0;
 const ok = (cond, what) => {
@@ -191,6 +191,18 @@ try {
   ok(xs.status === 403, "a cross-site POST with the session cookie is refused");
   const same = await fetch(`${BASE}/sync`, { method: "POST", headers: { cookie, origin: ORIGIN, "content-type": "application/json" }, body });
   ok(same.status === 200, "the same POST from our own origin works with the cookie");
+
+  // Google is the only sign-in offered; here it isn't configured, and a password account has no Google grant.
+  ok((await (await fetch(`${BASE}/auth-methods`)).json()).google === true, "auth-methods reports that Google sign-in is set up");
+  const social = await (await auth("/sign-in/social", { provider: "google", callbackURL: "/device?user_code=ABCD", errorCallbackURL: "/device" })).json();
+  const g = new URL(social.url ?? "http://invalid");
+  const scope = g.searchParams.get("scope") ?? "";
+  ok(g.hostname === "accounts.google.com" && g.searchParams.get("client_id") === "test-client.apps.googleusercontent.com", "Continue with Google sends the browser to Google with our client");
+  ok(g.searchParams.get("redirect_uri") === `${ORIGIN}/api/auth/callback/google`, "the redirect is this server's callback");
+  ok(scope.includes("calendar.readonly") && scope.includes("calendar.events") && scope.includes("email"), "one consent asks for sign-in and the calendar");
+  ok(g.searchParams.get("access_type") === "offline" && (g.searchParams.get("prompt") ?? "").includes("consent"), "and for a refresh token every time");
+  ok((await call(web, "/google-token")).status === 404, "an account without a Google grant has no calendar token");
+  ok((await call(tok.a1, "/google-token")).status === 404, "nor does a test token");
 
   // Signing out ends the session.
   ok((await auth("/sign-out", {}, granted.access_token)).status === 200, "the desktop signs out");

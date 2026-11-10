@@ -27,18 +27,15 @@
       main { width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
       h1 { font-size: 20px; margin: 0 0 4px; }
       p { margin: 0 0 16px; color: var(--fg-2); }
-      label { display: block; font-size: 13px; color: var(--fg-2); margin-bottom: 12px; }
-      input {
-        display: block; width: 100%; margin-top: 4px; padding: 10px 12px; font: inherit; color: var(--fg);
-        background: var(--field); border: 1px solid var(--border); border-radius: 8px;
-      }
-      input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       button {
         width: 100%; padding: 11px 14px; font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer;
         border: 1px solid var(--border); background: transparent; color: var(--fg);
       }
       button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
       button.link { border: 0; width: auto; padding: 0; font-weight: 400; color: var(--accent); }
+      button.google { display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--field); }
+      button.google svg { width: 18px; height: 18px; flex-shrink: 0; }
       button[disabled] { opacity: 0.6; cursor: wait; }
       .row { display: flex; gap: 10px; }
       .code { font: 600 22px/1 "Cascadia Code", Consolas, monospace; letter-spacing: 2px; text-align: center; padding: 14px; background: var(--field); border-radius: 8px; margin-bottom: 16px; }
@@ -54,16 +51,20 @@
 
       <section id="v-loading"><p>One moment…</p></section>
 
-      <form id="v-auth" hidden>
-        <p id="auth-lead">Sign in to continue.</p>
-        <label id="f-name" hidden>Name <input id="name" autocomplete="name" /></label>
-        <label>Email <input id="email" type="email" autocomplete="email" required /></label>
-        <label>Password <input id="password" type="password" autocomplete="current-password" minlength="10" required /></label>
-        <button class="primary" id="btn-auth" type="submit">Sign in</button>
-        <button id="btn-google" type="button" hidden style="margin-top: 10px">Continue with Google</button>
+      <section id="v-auth" hidden>
+        <p id="auth-lead">Sign in to continue. New here? The same button creates your account.</p>
+        <button id="btn-google" class="google" type="button">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+          </svg>
+          Continue with Google
+        </button>
         <div class="error" id="auth-error" role="alert"></div>
-        <p class="foot"><span id="mode-q">No account yet?</span> <button class="link" id="btn-mode" type="button">Create one</button></p>
-      </form>
+        <p class="foot">Deskpad asks Google for your calendar too, so your day shows up without a second sign-in.</p>
+      </section>
 
       <section id="v-approve" hidden>
         <p>Connect the Deskpad app on your PC to <b id="who"></b>? Check that it shows this code:</p>
@@ -84,8 +85,10 @@
     <script type="module">
       const $ = (id) => document.getElementById(id);
       const show = (id) => ["v-loading", "v-auth", "v-approve", "v-done"].forEach((v) => ($(v).hidden = v !== id));
-      const userCode = (new URLSearchParams(location.search).get("user_code") ?? "").trim();
-      let signup = false;
+      const params = new URLSearchParams(location.search);
+      const userCode = (params.get("user_code") ?? "").trim();
+      // Where Google sends the browser back to: this page, without a stale error.
+      const here = location.pathname + (userCode ? `?user_code=${encodeURIComponent(userCode)}` : "");
 
       async function api(path, body) {
         const res = await fetch(`/api/auth${path}`, {
@@ -99,20 +102,20 @@
         return data;
       }
 
-      function setMode(next) {
-        signup = next;
-        $("f-name").hidden = !signup;
-        $("btn-auth").textContent = signup ? "Create account" : "Sign in";
-        $("auth-lead").textContent = signup ? "Create your Deskpad account." : "Sign in to continue.";
-        $("mode-q").textContent = signup ? "Already have an account?" : "No account yet?";
-        $("btn-mode").textContent = signup ? "Sign in" : "Create one";
-        $("password").autocomplete = signup ? "new-password" : "current-password";
-        $("auth-error").textContent = "";
+      /** What a failed return from Google means, in plain words. */
+      function explain(code) {
+        if (!code) return "";
+        if (/signup|unable_to_create_user|forbidden/i.test(code)) return "This Deskpad server isn't taking new accounts.";
+        if (/access_denied/i.test(code)) return "Google sign-in was cancelled.";
+        return "Google sign-in didn't complete. Try again.";
       }
 
       async function route() {
         const me = await api("/get-session").catch(() => null);
-        if (!me?.user) return show("v-auth");
+        if (!me?.user) {
+          $("auth-error").textContent = explain(params.get("error"));
+          return show("v-auth");
+        }
         if (!userCode) {
           $("done-text").textContent = `Signed in as ${me.user.email}.`;
           return show("v-done");
@@ -134,32 +137,17 @@
         show("v-approve");
       }
 
-      $("btn-mode").addEventListener("click", () => setMode(!signup));
-
-      $("v-auth").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const btn = $("btn-auth");
+      $("btn-google").addEventListener("click", async () => {
+        const btn = $("btn-google");
         btn.disabled = true;
         $("auth-error").textContent = "";
         try {
-          const email = $("email").value.trim();
-          const password = $("password").value;
-          if (signup) await api("/sign-up/email", { email, password, name: $("name").value.trim() || email.split("@")[0] });
-          else await api("/sign-in/email", { email, password });
-          await route();
-        } catch (err) {
-          $("auth-error").textContent = err.message;
-        } finally {
-          btn.disabled = false;
-        }
-      });
-
-      $("btn-google").addEventListener("click", async () => {
-        try {
-          const r = await api("/sign-in/social", { provider: "google", callbackURL: location.pathname + location.search });
+          const r = await api("/sign-in/social", { provider: "google", callbackURL: here, errorCallbackURL: here });
           if (r?.url) location.href = r.url;
+          else throw new Error("Google sign-in isn't set up on this server yet.");
         } catch (err) {
           $("auth-error").textContent = err.message;
+          btn.disabled = false;
         }
       });
 
@@ -183,11 +171,18 @@
 
       $("btn-signout").addEventListener("click", async () => {
         await api("/sign-out", {}).catch(() => {});
-        location.reload();
+        location.href = here;
       });
 
-      // Offer Google only when the server has it configured.
-      fetch("/api/v1/auth-methods").then((r) => r.json()).then((m) => ($("btn-google").hidden = !m.google)).catch(() => {});
+      fetch("/api/v1/auth-methods")
+        .then((r) => r.json())
+        .then((m) => {
+          if (!m.google) {
+            $("btn-google").disabled = true;
+            $("auth-error").textContent = "Google sign-in isn't set up on this server yet.";
+          }
+        })
+        .catch(() => {});
       route();
     </script>
   </body>

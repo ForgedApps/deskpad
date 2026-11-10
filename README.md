@@ -39,9 +39,9 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
   several plain lines makes a row per line, indented lines nested. Paste an
   image (a screenshot, a picture copied from a page) and it is stored once and
   shown in the row scaled to the sidebar's width.
-- **Cloud sync** (optional): Settings → Cloud sync → Sign in opens your
-  browser to approve this PC; after that your notes, tasks, recorded days and
-  pictures are backed up and kept in step across devices. Everything stays
+- **One sign-in** (optional): Settings → Sign in with Google opens your
+  browser once. That shows your Google Calendar in the sidebar and backs up
+  your notes, tasks, recorded days and pictures, kept in step across devices. Everything stays
   local too and works offline. The server is `cloud/`, a Cloudflare Worker.
 - **On your phone**: the same server hosts a web app with your notes and
   tasks (nesting, pictures, offline). Open its address in the phone's
@@ -92,23 +92,36 @@ Output lands in `src-tauri/target/release/bundle/` (MSI and NSIS installers).
 
 ## Connecting your calendar
 
-### Google Calendar (recommended)
+### Sign in with Google (recommended)
 
-Deskpad uses the OAuth desktop-app flow with PKCE and a loopback redirect, so it
-needs its own OAuth client. One-time setup in [Google Cloud Console](https://console.cloud.google.com/):
+Settings → **Sign in with Google**. Your browser opens, you pick your Google
+account and allow calendar access, and you confirm the code Deskpad shows.
+That one step gives the sidebar your calendar and turns on backup and sync.
+There is nothing to paste into the app.
+
+This needs a Deskpad server with Google sign-in configured; setting one up
+(a Cloudflare Worker and a Google OAuth client) is described in
+[cloud/README.md](cloud/README.md).
+
+### Without an account
+
+Deskpad can also read the calendar on its own, using the OAuth desktop-app
+flow with PKCE and a loopback redirect. That needs its own OAuth client.
+One-time setup in [Google Cloud Console](https://console.cloud.google.com/):
 
 1. Create a project (or pick one) and enable the **Google Calendar API**
    (APIs & Services → Library).
 2. Configure the OAuth consent screen (External, add yourself as a test user
    while the app is in testing).
-3. APIs & Services → Credentials → **Create credentials → OAuth client ID**,
-   application type **Desktop app**. Copy the client ID and client secret.
-4. In Deskpad: Settings → paste both → **Connect Google Calendar**. Your browser
-   opens for consent; Deskpad listens on `127.0.0.1` for the redirect.
+3. Create an OAuth client of type **Desktop app**. Copy the client ID and
+   client secret.
+4. In Deskpad: Settings → **Connect a calendar without an account** → paste
+   both → **Connect Google Calendar**. Your browser opens for consent;
+   Deskpad listens on `127.0.0.1` for the redirect.
 
-Tokens live in `%APPDATA%\com.jgentes.deskpad\google_tokens.json` and refresh
-automatically. The scope is read-only (`calendar.readonly`). Declined invites
-and cancelled events are hidden.
+Those tokens live in `%APPDATA%\com.jgentes.deskpad\google_tokens.json` and
+refresh automatically. When you are signed in, the account's access is used
+instead. Declined invites and cancelled events are hidden.
 
 ## Installing (release build)
 
