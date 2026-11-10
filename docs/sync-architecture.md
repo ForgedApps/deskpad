@@ -21,7 +21,7 @@ Goals
   in a query could cross. Isolation should come from the platform's object
   boundaries, not from a `WHERE tenant_id = ?` clause.
 - Cheap at one user, and no redesign at ten thousand.
-- A control plane (accounts, devices, tokens) that can grow a sign-up flow,
+- A control plane (accounts, tenants, sessions) that can grow a sign-up flow,
   sharing and billing later without touching the data plane.
 
 Non-goals for now
@@ -38,15 +38,25 @@ Non-goals for now
 | --- | --- | --- |
 | Per-tenant data | One **Durable Object** (SQLite-backed) per tenant | Each DO has its own SQLite database; there is no table that holds two tenants. Strong consistency, transactions, WebSockets for live push, point-in-time recovery built in. |
 | Images and exports | One **R2** bucket, keys prefixed `t/<tenant>/…`, never public | Objects are only ever read or written by the Worker after it has resolved the tenant from the caller's token. Bucket-per-tenant is kept as an option for a future "enterprise" tier. |
-| Control plane | One **D1** database (`accounts`) | Users, tenants, memberships, devices, tokens. Small, relational, easy to inspect. Holds no note content. |
-| API and auth | One **Worker** | The only thing with bindings to the DO namespace, R2 and D1. Validates tokens, resolves the tenant, forwards to that tenant's DO. |
+| Control plane | One **D1** database (`accounts`) | Better Auth's tables (users, sessions, organizations, members) plus usage. Small, relational, easy to inspect. Holds no note content. |
+| API and auth | One **Worker** | The only thing with bindings to the DO namespace, R2 and D1. Validates sessions, resolves the tenant, forwards to that tenant's DO. |
 | Static mobile app | Worker **static assets** | Same Worker serves the PWA, so API and app share an origin and cookies work. |
 | Background jobs | **Queues** + **Cron Triggers** | Nightly snapshot export per tenant to R2, tombstone GC, orphan image sweep. |
 
-Rejected: Workers KV for content (eventually consistent, no queries), a shared
-D1 database for everyone's rows (isolation by convention only), Cloudflare
-Access as the user directory (fine for one person, priced per seat and not a
-public sign-up).
+| Identity | **Better Auth** in the Worker, on the D1 control plane | Owns users, sessions and sign-in methods in our own database; its organization plugin is the tenant/membership model. See §6. |
+
+Rejected: Workers KV for content (eventually consistent, no queries) and a
+shared D1 database for everyone's rows (isolation by convention only).
+
+On Cloudflare Access: it would protect the API perfectly well while Deskpad
+has one user, and it is free for up to 50 seats. It is not the user directory
+for a public product, for reasons that have nothing to do with the Workers
+plan (Access is billed separately, per seat, under Zero Trust): every customer
+would be a seat in our Zero Trust organization, there is no self-serve sign-up
+or account we own (only the identity provider's claims), and the desktop app
+would need admin-issued service tokens rather than a per-user device login.
+Access stays useful for what it is built for: gating `staging` and any admin
+endpoints to the team.
 
 ## 3. Isolation model
 
@@ -90,23 +100,34 @@ prefix delete on R2, and the rows in D1. There is nothing else to find.
 
 ### 4.1 Control plane (D1 `accounts`)
 
+Better Auth generates and migrates its own tables in this database (`user`,
+`session`, `account`, `verification`, and with the organization plugin
+`organization`, `member`, `invitation`). We don't hand-roll those. The mapping
+to this design:
+
+| Concept here | Better Auth table | Notes |
+| --- | --- | --- |
+| User | `user` | Plus `account` rows per sign-in method (Google, passkey, …). |
+| Tenant | `organization` | Its `id` is the tenant id that names the Durable Object and the R2 prefix. Extra fields: `plan`, `status`. |
+| Membership | `member` | `role` = owner today; admin/member later for shared workspaces. |
+| Device / token | `session` | One session per device, with `activeOrganizationId` selecting the tenant. Extra fields: device `name`, `kind` (windows, web). |
+
+Our own tables alongside:
+
 ```sql
-CREATE TABLE users      (id TEXT PRIMARY KEY, email TEXT UNIQUE, created_at INTEGER, status TEXT);
-CREATE TABLE tenants    (id TEXT PRIMARY KEY, name TEXT, created_at INTEGER, plan TEXT, status TEXT);
-CREATE TABLE memberships(user_id TEXT, tenant_id TEXT, role TEXT, PRIMARY KEY (user_id, tenant_id));
-CREATE TABLE devices    (id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT, name TEXT, kind TEXT,
-                         created_at INTEGER, last_seen INTEGER, revoked_at INTEGER);
-CREATE TABLE tokens     (hash TEXT PRIMARY KEY, device_id TEXT, expires_at INTEGER, scopes TEXT);
-CREATE TABLE usage      (tenant_id TEXT, day TEXT, rows INTEGER, bytes INTEGER, images INTEGER,
-                         PRIMARY KEY (tenant_id, day));
+CREATE TABLE usage (tenant_id TEXT, day TEXT, rows INTEGER, bytes INTEGER, images INTEGER,
+                    PRIMARY KEY (tenant_id, day));
 ```
 
-A user has memberships in tenants; today every user gets exactly one tenant at
-sign-up and is its owner. Keeping the three tables apart from day one is what
-makes shared workspaces possible later without a migration of content.
+A user has memberships in organizations; today a database hook creates exactly
+one organization per new user and makes them its owner. Keeping user, tenant
+and membership apart from day one is what makes shared workspaces possible
+later without a migration of content.
 
-Ids are ULIDs (sortable, 26 chars). Tokens are random 256-bit values; only
-their SHA-256 is stored.
+The tenant id must be treated as permanent and unguessable-by-construction is
+not required (isolation never depends on the id being secret), but it must
+never be reused: a deleted organization's id is tombstoned in a small
+`retired_tenants` table so a new tenant can't inherit an old object or prefix.
 
 ### 4.2 Data plane (one Durable Object per tenant, SQLite)
 
@@ -219,25 +240,60 @@ implementations (`invoke` on desktop, `fetch` + IndexedDB on the web).
 
 ## 6. Authentication and devices
 
-Today: one person, so the first implementation is **sign-in with Google (OIDC)
-in the Worker**, which the user already has and which the PWA needs anyway.
-Passkeys can be added as a second method later; email magic links need an email
-provider and wait for the sign-up work.
+**Better Auth** runs inside the Worker, mounted at `/api/auth/*`, with the D1
+`accounts` database as its store (Kysely D1 dialect or Drizzle). It is a
+library, not a service: users and sessions live in our database, there is no
+per-seat fee, and sign-up later is configuration plus a page rather than a
+migration to a different identity system.
 
-- Browser sessions (PWA): an HttpOnly, `SameSite=Lax` cookie carrying a session
-  token; the Worker looks it up in `tokens` and gets `device`, `user`, `tenant`.
-- Desktop: a **device authorization** flow. The app opens the browser at
-  `/link?code=…`, the user signs in there and approves the device, and the app
-  polls until it receives a long-lived device token (90 days, rotated on use).
-  This reuses the loopback trick `google.rs` already does for Google.
-- Tokens carry scopes (`sync`, `images`, `export`); revoking a device deletes
-  its tokens, and the DO drops that device's WebSocket on the next message.
-- Memberships gate tenant access. Today `role = owner` for everyone; the
-  check is written as "has a membership with a role that allows X" from the
-  start so sharing is an insert, not a code change.
+Configuration, in the order it gets switched on:
 
-Secrets (`OIDC client secret`, token signing key) live in Worker secrets, never
-in the repo. The desktop app only ever holds its own device token.
+1. **Google as a social provider.** One person today, and the PWA needs a
+   browser sign-in anyway. Sign-up is closed by an allowlist of emails in a
+   `before` hook until the public launch; opening it is deleting the hook.
+2. **Organization plugin** for tenants and memberships (§4.1). A `user.create`
+   database hook creates the user's personal organization; `session.create`
+   sets it active.
+3. **Device authorization plugin** (RFC 8628) for the desktop. The app asks
+   for a code, opens the browser at the verification page, the user signs in
+   and approves, and the app polls until it receives a session token, which it
+   stores in `cloud.json` and sends as a bearer token (bearer plugin). No
+   loopback listener or embedded secret is needed, and the same flow works for
+   any future native client.
+4. **Passkeys**, then **email + magic link** when there is an email provider
+   and a sign-up page. Both are plugins over the same tables.
+
+How a request is authorized:
+
+- The Worker's middleware calls `auth.api.getSession({ headers })`. That
+  accepts the PWA's HttpOnly cookie or the desktop's bearer token and returns
+  `{ user, session }`.
+- The tenant is `session.activeOrganizationId`, and the middleware confirms a
+  `member` row for (user, organization) on every request, cached for a minute
+  per session. That pair is the only input to `idFromName` and to the R2
+  prefix (§3 rule 1). Better Auth never sees or addresses a Durable Object.
+- Revoking a device is deleting its session; the DO drops that device's
+  WebSocket on its next message because the Worker re-checks the session when
+  it upgrades and on a timer.
+- Role checks are written as "has a membership with a role that allows X" from
+  the start, using the organization plugin's access control, so sharing is an
+  insert, not a code change.
+
+Things to pin down when building, because they are easy to get wrong on
+Workers:
+
+- Create the `betterAuth` instance per request (or per isolate with the D1
+  binding passed in), since bindings only exist inside the handler.
+- Session lookups hit D1 on every API call. Enable Better Auth's cookie cache
+  for the PWA and keep a short in-isolate cache for bearer tokens; do not put
+  sessions in KV as the source of truth (revocation would lag).
+- `BETTER_AUTH_SECRET` and the Google client secret are Worker secrets, per
+  environment, never in the repo. The desktop holds only its own session token.
+- The WebSocket upgrade (`/sync/stream`) cannot send an Authorization header
+  from a browser; the PWA relies on the cookie, and the desktop passes the
+  token in the `Sec-WebSocket-Protocol` header, never in the URL.
+
+Cloudflare Access is still used, but only around `staging` and admin routes.
 
 ## 7. Backup, export and recovery
 
@@ -284,7 +340,7 @@ cloud/
   wrangler.jsonc          # worker + DO namespace + R2 + D1 + queue bindings, per-env
   src/
     index.ts              # router, auth middleware, static assets fallthrough
-    auth/                 # OIDC, device link flow, token store
+    auth/                 # Better Auth config (providers, organization, device flow), tenant middleware
     tenant-do.ts          # Durable Object: schema, /sync, /export, websockets, alarms
     images.ts             # R2 put/get with tenant prefix
     jobs/                 # cron: exports, tombstone GC, orphan image sweep
@@ -311,8 +367,9 @@ only A's rows and images, including after deleting B.
    device token issued by hand. This already gives remote backup and
    two-machine sync.
 2. Images through R2; nightly export job; PITR tested.
-3. Worker auth: Google OIDC, device link flow, D1 control plane with one user
-   and one tenant created by a script.
+3. Worker auth: Better Auth on D1 with Google sign-in (allowlisted), the
+   organization plugin, and the device authorization flow for the desktop.
 4. PWA: mobile layout over the shared outline code, IndexedDB store.
-5. Sign-up page, email, billing: new code in `auth/` and the website, no change
-   below the Worker's auth middleware.
+5. Sign-up page, email, billing: remove the allowlist, add the email and
+   passkey plugins and the website. No change below the Worker's auth
+   middleware.
