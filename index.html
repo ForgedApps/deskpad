@@ -92,7 +92,12 @@
 
     <div id="settings" class="modal hidden">
       <form id="settings-form" class="modal-card">
-        <h2>Settings</h2>
+        <div class="modal-head">
+          <h2>Settings</h2>
+          <button type="button" id="btn-settings-x" class="icon small" title="Close" aria-label="Close settings">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
 
         <fieldset>
           <legend>Google Calendar</legend>
@@ -127,23 +132,22 @@
               <button type="button" id="btn-cloud-sync">Sync now</button>
               <button type="button" id="btn-cloud-force" class="danger hidden"></button>
               <span class="spacer"></span>
-              <button type="button" id="btn-cloud-disconnect">Disconnect</button>
+              <button type="button" id="btn-cloud-signout">Sign out</button>
             </div>
           </div>
+          <div id="cloud-wait" class="hidden">
+            <div class="cloud-state">
+              Finish signing in in your browser. Check that the page shows this code:
+            </div>
+            <div id="cloud-code" class="cloud-code"></div>
+            <button type="button" id="btn-cloud-cancel">Cancel</button>
+          </div>
           <div id="cloud-off">
-            <label>
-              Sync server
-              <input id="s-cloud-url" placeholder="https://…workers.dev" spellcheck="false" />
-            </label>
-            <label>
-              Device token
-              <input id="s-cloud-token" type="password" autocomplete="off" />
-              <small>
-                Backs up your notes, tasks and pictures and keeps your devices in step. Everything
-                stays on this PC as well and keeps working offline.
-              </small>
-            </label>
-            <button type="button" id="btn-cloud-connect" class="primary">Connect</button>
+            <small class="cloud-lead">
+              Backs up your notes, tasks and pictures and keeps your devices in step. Everything
+              stays on this PC as well and keeps working offline.
+            </small>
+            <button type="button" id="btn-cloud-signin" class="primary">Sign in</button>
             <div id="cloud-error" class="error"></div>
           </div>
         </fieldset>
@@ -173,11 +177,12 @@
           <input id="s-autostart" type="checkbox" />
           Start Deskpad when I sign in to Windows
         </label>
+        <div id="settings-error" class="error"></div>
         <div class="modal-actions">
           <button type="button" id="btn-quit" class="danger">Quit Deskpad</button>
           <span class="spacer"></span>
-          <button type="button" id="btn-settings-cancel">Cancel</button>
-          <button type="submit" class="primary">Save</button>
+          <span id="settings-saved" class="saved-note" aria-live="polite"></span>
+          <button type="button" id="btn-settings-close" class="primary">Close</button>
         </div>
       </form>
     </div>

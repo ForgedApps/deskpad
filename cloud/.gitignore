@@ -2,3 +2,4 @@ node_modules
 .wrangler
 .dev.vars
 .device-token*.txt
+.admin-key.txt

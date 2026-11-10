@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Deskpad sign-in</title>
+    <style>
+      :root {
+        --bg: #15171c; --card: #1d2027; --field: #262a33; --fg: #e8eaf0; --fg-2: #9aa0ae;
+        --accent: #6c9cff; --accent-fg: #0f1320; --danger: #ff6b6b; --border: #2c3039; --ok: #4cd27f;
+        color-scheme: dark;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f7f7f9; --card: #ffffff; --field: #f0f1f5; --fg: #1b1d23; --fg-2: #5c6270;
+          --accent: #2f63d6; --accent-fg: #ffffff; --danger: #d64545; --border: #dcdee5; --ok: #1f9e58;
+          color-scheme: light;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100dvh; display: grid; place-items: center; padding: 16px;
+        background: var(--bg); color: var(--fg);
+        font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+      main { width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p { margin: 0 0 16px; color: var(--fg-2); }
+      label { display: block; font-size: 13px; color: var(--fg-2); margin-bottom: 12px; }
+      input {
+        display: block; width: 100%; margin-top: 4px; padding: 10px 12px; font: inherit; color: var(--fg);
+        background: var(--field); border: 1px solid var(--border); border-radius: 8px;
+      }
+      input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      button {
+        width: 100%; padding: 11px 14px; font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer;
+        border: 1px solid var(--border); background: transparent; color: var(--fg);
+      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+      button.link { border: 0; width: auto; padding: 0; font-weight: 400; color: var(--accent); }
+      button[disabled] { opacity: 0.6; cursor: wait; }
+      .row { display: flex; gap: 10px; }
+      .code { font: 600 22px/1 "Cascadia Code", Consolas, monospace; letter-spacing: 2px; text-align: center; padding: 14px; background: var(--field); border-radius: 8px; margin-bottom: 16px; }
+      .error { color: var(--danger); font-size: 13px; min-height: 20px; margin-top: 10px; }
+      .foot { margin: 16px 0 0; font-size: 13px; }
+      .ok { color: var(--ok); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Deskpad</h1>
+
+      <section id="v-loading"><p>One moment…</p></section>
+
+      <form id="v-auth" hidden>
+        <p id="auth-lead">Sign in to continue.</p>
+        <label id="f-name" hidden>Name <input id="name" autocomplete="name" /></label>
+        <label>Email <input id="email" type="email" autocomplete="email" required /></label>
+        <label>Password <input id="password" type="password" autocomplete="current-password" minlength="10" required /></label>
+        <button class="primary" id="btn-auth" type="submit">Sign in</button>
+        <button id="btn-google" type="button" hidden style="margin-top: 10px">Continue with Google</button>
+        <div class="error" id="auth-error" role="alert"></div>
+        <p class="foot"><span id="mode-q">No account yet?</span> <button class="link" id="btn-mode" type="button">Create one</button></p>
+      </form>
+
+      <section id="v-approve" hidden>
+        <p>Connect the Deskpad app on your PC to <b id="who"></b>? Check that it shows this code:</p>
+        <div class="code" id="code"></div>
+        <div class="row">
+          <button id="btn-deny" type="button">Cancel</button>
+          <button class="primary" id="btn-approve" type="button">Connect</button>
+        </div>
+        <div class="error" id="approve-error" role="alert"></div>
+      </section>
+
+      <section id="v-done" hidden>
+        <p id="done-text" class="ok"></p>
+        <p class="foot"><button class="link" id="btn-signout" type="button">Sign out of this browser</button></p>
+      </section>
+    </main>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id);
+      const show = (id) => ["v-loading", "v-auth", "v-approve", "v-done"].forEach((v) => ($(v).hidden = v !== id));
+      const userCode = (new URLSearchParams(location.search).get("user_code") ?? "").trim();
+      let signup = false;
+
+      async function api(path, body) {
+        const res = await fetch(`/api/auth${path}`, {
+          method: body === undefined ? "GET" : "POST",
+          headers: body === undefined ? {} : { "content-type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          credentials: "same-origin",
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.message || data?.error_description || `Something went wrong (${res.status}).`);
+        return data;
+      }
+
+      function setMode(next) {
+        signup = next;
+        $("f-name").hidden = !signup;
+        $("btn-auth").textContent = signup ? "Create account" : "Sign in";
+        $("auth-lead").textContent = signup ? "Create your Deskpad account." : "Sign in to continue.";
+        $("mode-q").textContent = signup ? "Already have an account?" : "No account yet?";
+        $("btn-mode").textContent = signup ? "Sign in" : "Create one";
+        $("password").autocomplete = signup ? "new-password" : "current-password";
+        $("auth-error").textContent = "";
+      }
+
+      async function route() {
+        const me = await api("/get-session").catch(() => null);
+        if (!me?.user) return show("v-auth");
+        if (!userCode) {
+          $("done-text").textContent = `Signed in as ${me.user.email}.`;
+          return show("v-done");
+        }
+        try {
+          // Claims the code for this account and reports where it stands.
+          const state = await api(`/device?user_code=${encodeURIComponent(userCode)}`);
+          if (state.status !== "pending") {
+            $("done-text").textContent = state.status === "approved" ? "This PC is already connected. You can close this tab." : "That request was cancelled. Start again from the app.";
+            return show("v-done");
+          }
+        } catch (err) {
+          $("done-text").textContent = "That code is not valid any more. Start again from the Deskpad app.";
+          $("done-text").className = "error";
+          return show("v-done");
+        }
+        $("who").textContent = me.user.email;
+        $("code").textContent = userCode;
+        show("v-approve");
+      }
+
+      $("btn-mode").addEventListener("click", () => setMode(!signup));
+
+      $("v-auth").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const btn = $("btn-auth");
+        btn.disabled = true;
+        $("auth-error").textContent = "";
+        try {
+          const email = $("email").value.trim();
+          const password = $("password").value;
+          if (signup) await api("/sign-up/email", { email, password, name: $("name").value.trim() || email.split("@")[0] });
+          else await api("/sign-in/email", { email, password });
+          await route();
+        } catch (err) {
+          $("auth-error").textContent = err.message;
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      $("btn-google").addEventListener("click", async () => {
+        try {
+          const r = await api("/sign-in/social", { provider: "google", callbackURL: location.pathname + location.search });
+          if (r?.url) location.href = r.url;
+        } catch (err) {
+          $("auth-error").textContent = err.message;
+        }
+      });
+
+      for (const [id, path, text] of [
+        ["btn-approve", "/device/approve", "Connected. You can close this tab and go back to Deskpad."],
+        ["btn-deny", "/device/deny", "Cancelled. Nothing was connected."],
+      ]) {
+        $(id).addEventListener("click", async () => {
+          $(id).disabled = true;
+          try {
+            await api(path, { userCode });
+            $("done-text").textContent = text;
+            show("v-done");
+          } catch (err) {
+            $("approve-error").textContent = err.message;
+          } finally {
+            $(id).disabled = false;
+          }
+        });
+      }
+
+      $("btn-signout").addEventListener("click", async () => {
+        await api("/sign-out", {}).catch(() => {});
+        location.reload();
+      });
+
+      // Offer Google only when the server has it configured.
+      fetch("/api/v1/auth-methods").then((r) => r.json()).then((m) => ($("btn-google").hidden = !m.google)).catch(() => {});
+      route();
+    </script>
+  </body>
+</html>

@@ -14,5 +14,8 @@
   "devDependencies": {
     "typescript": "~6.0.3",
     "wrangler": "^4.47.0"
+  },
+  "dependencies": {
+    "better-auth": "^1.7.19"
   }
 }

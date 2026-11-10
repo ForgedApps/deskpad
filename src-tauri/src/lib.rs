@@ -681,16 +681,51 @@ fn cloud_status(cloud: State<sync::Cloud>) -> sync::CloudStatus {
     cloud.status.lock().unwrap().clone()
 }
 
-/// Point this PC at a sync server with a device token. An empty URL and token
-/// turn sync off; the local data is untouched either way.
+/// Sign this PC in: get a device code, open the approval page in the browser,
+/// and wait there until the user approves. Local data is untouched either way.
 #[tauri::command]
-fn cloud_configure(app: AppHandle, cloud: State<sync::Cloud>, url: String, token: String) -> Result<(), String> {
-    let config = sync::CloudConfig { url: url.trim().trim_end_matches('/').to_string(), token: token.trim().to_string() };
-    let off = config.url.is_empty() && config.token.is_empty();
-    if !off && !config.ready() {
-        return Err("Enter the sync server's https:// address and the device token (at least 32 characters).".into());
+async fn cloud_sign_in(app: AppHandle, cloud: State<'_, sync::Cloud>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    if cloud.status.lock().unwrap().signing_in.is_some() {
+        return Err("A sign-in is already waiting in your browser.".into());
     }
-    cloud.set_config(config);
+    // A server set in cloud.json (a staging or self-hosted one) is kept.
+    let url = Some(cloud.config.lock().unwrap().url.trim_end_matches('/').to_string()).filter(|u| !u.is_empty()).unwrap_or_else(|| sync::DEFAULT_URL.to_string());
+    let code = sync::begin_sign_in(&url).await?;
+    cloud.cancel_sign_in.store(false, Ordering::Relaxed);
+    cloud.status.lock().unwrap().signing_in = Some(code.user_code.clone());
+    app.emit("cloud-status", ()).ok();
+    if let Err(e) = app.opener().open_url(code.verification_uri_complete.clone(), None::<&str>) {
+        eprintln!("[sync] could not open the browser: {e}");
+    }
+    let result = sync::finish_sign_in(&url, &code, &cloud.cancel_sign_in).await;
+    cloud.status.lock().unwrap().signing_in = None;
+    match result {
+        Ok(token) => {
+            cloud.set_config(sync::CloudConfig { url, token });
+            app.emit("cloud-status", ()).ok();
+            Ok(())
+        }
+        Err(e) => {
+            app.emit("cloud-status", ()).ok();
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+fn cloud_cancel_sign_in(cloud: State<sync::Cloud>) {
+    cloud.cancel_sign_in.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Sign this PC out. Notes stay on the PC and in the cloud; syncing stops.
+#[tauri::command]
+async fn cloud_sign_out(app: AppHandle, cloud: State<'_, sync::Cloud>) -> Result<(), String> {
+    let config = cloud.config.lock().unwrap().clone();
+    if config.ready() {
+        sync::sign_out(&config).await;
+    }
+    cloud.set_config(sync::CloudConfig { url: config.url, token: String::new() });
     app.emit("cloud-status", ()).ok();
     Ok(())
 }
@@ -900,7 +935,9 @@ pub fn run() {
             save_image,
             image_dir,
             cloud_status,
-            cloud_configure,
+            cloud_sign_in,
+            cloud_cancel_sign_in,
+            cloud_sign_out,
             cloud_sync_now,
             schedule_item,
             unschedule_item,

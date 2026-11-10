@@ -693,8 +693,39 @@ kbd {
   overflow-y: auto;
 }
 .modal-card h2 {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: 16px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.saved-note {
+  font-size: 12px;
+  color: var(--now);
+}
+#settings-error:empty {
+  display: none;
+}
+.cloud-code {
+  font-family: Cascadia Code, Consolas, monospace;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-align: center;
+  padding: 10px;
+  margin-bottom: 8px;
+  background: var(--bg-3);
+  border-radius: 8px;
+}
+.cloud-lead {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--fg-3);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .modal label {
   display: flex;
@@ -811,6 +842,7 @@ legend {
 #google-disconnected.hidden,
 #cloud-on.hidden,
 #cloud-off.hidden,
+#cloud-wait.hidden,
 #btn-cloud-force.hidden {
   display: none;
 }

@@ -6,14 +6,10 @@
 // See docs/sync-architecture.md.
 
 import { IMAGE_MAX_BYTES, IMAGE_NAME, type SyncRequest } from "../../shared/protocol";
+import { callerFromSession, createAuth, migrate, type Caller } from "./auth";
 import { TenantDO } from "./tenant-do";
 
 export { TenantDO };
-
-interface Caller {
-  tenant: string;
-  device: string;
-}
 
 const TENANT_ID = /^[a-z0-9_-]{3,64}$/;
 const DEVICE_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -33,24 +29,31 @@ async function sha256Hex(data: ArrayBuffer | Uint8Array | string): Promise<strin
 }
 
 /**
- * Who is calling. Step 1 of the design: device tokens issued by hand. The
- * `DEVICE_TOKENS` secret is a JSON object mapping the SHA-256 of each token to
- * its { tenant, device }, so the secret never holds a usable token. Better
- * Auth sessions replace this function later; nothing below it changes.
+ * Who is calling. A Better Auth session (the web app's cookie, or the bearer
+ * token the desktop got from the device sign-in flow) is the normal way.
+ *
+ * `DEVICE_TOKENS` is a second, optional way for tests and automation: a JSON
+ * object mapping the SHA-256 of a hand-issued token to its { tenant, device }.
+ * It is consulted only when that secret is set, which production does not do.
  */
-async function authenticate(req: Request, env: Env): Promise<Caller | null> {
-  const header = req.headers.get("authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (token.length < 32) return null;
-  let table: Record<string, Caller>;
-  try {
-    table = JSON.parse(env.DEVICE_TOKENS || "{}");
-  } catch {
-    return null;
+async function authenticate(req: Request, env: Env, origin: string): Promise<Caller | null> {
+  if (env.DEVICE_TOKENS) {
+    const header = req.headers.get("authorization") ?? "";
+    const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+    if (token.length >= 32) {
+      try {
+        const table = JSON.parse(env.DEVICE_TOKENS) as Record<string, Caller>;
+        const hit = table[await sha256Hex(token)];
+        if (hit && TENANT_ID.test(hit.tenant ?? "") && DEVICE_ID.test(hit.device ?? "")) return { tenant: hit.tenant, device: hit.device };
+      } catch {
+        // fall through to sessions
+      }
+    }
   }
-  const hit = table[await sha256Hex(token)];
-  if (!hit || !TENANT_ID.test(hit.tenant ?? "") || !DEVICE_ID.test(hit.device ?? "")) return null;
-  return { tenant: hit.tenant, device: hit.device };
+  if (!env.BETTER_AUTH_SECRET) return null;
+  // No credentials at all: don't spend a database read finding that out.
+  if (!req.headers.get("authorization") && !req.headers.get("cookie")) return null;
+  return callerFromSession(createAuth(env, origin), env, req);
 }
 
 /** The caller's own object; the name comes from `authenticate` and nowhere else. */
@@ -76,9 +79,40 @@ export default {
     const url = new URL(req.url);
     const path = url.pathname;
     if (path === "/api/v1/health") return json({ ok: true });
+    // What the sign-in pages may offer; nothing secret.
+    if (path === "/api/v1/auth-methods") return json({ google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET), password: true });
+
+    // Better Auth's own endpoints: sign-in, sign-up, sessions, the device flow.
+    if (path.startsWith("/api/auth/")) {
+      if (!env.BETTER_AUTH_SECRET) return fail(503, "Sign-in is not configured on this server");
+      return createAuth(env, url.origin).handler(req);
+    }
+
+    // Create or update the control-plane tables. Run once after each deploy
+    // that changes them, with the ADMIN_KEY secret.
+    if (path === "/api/admin/migrate" && req.method === "POST") {
+      const key = req.headers.get("x-admin-key") ?? "";
+      if (!env.ADMIN_KEY || key.length < 24 || (await sha256Hex(key)) !== (await sha256Hex(env.ADMIN_KEY))) return fail(404, "Not found");
+      return json({ ok: true, changes: await migrate(env, url.origin) });
+    }
+
     if (!path.startsWith("/api/v1/")) return fail(404, "Not found");
 
-    const caller = await authenticate(req, env);
+    // A session cookie is sent by the browser on its own, so anything that
+    // changes data must come from our own pages.
+    if (req.method !== "GET" && req.method !== "HEAD" && !req.headers.get("authorization")) {
+      const from = req.headers.get("origin");
+      if (from !== url.origin) return fail(403, "Cross-site request refused");
+    }
+
+    let caller: Caller | null;
+    try {
+      caller = await authenticate(req, env, url.origin);
+    } catch (err) {
+      // "Could not check" is not "not signed in": a client must not drop its session over this.
+      console.error("auth failed", { path, message: err instanceof Error ? err.message : String(err) });
+      return fail(503, "Sign-in is temporarily unavailable");
+    }
     if (!caller) return fail(401, "Not signed in");
 
     try {
@@ -93,7 +127,7 @@ export default {
       }
 
       if (path === "/api/v1/status" && req.method === "GET") {
-        return json({ tenant: caller.tenant, device: caller.device, ...(await tenantStub(env, caller).stats(caller.tenant)) });
+        return json({ tenant: caller.tenant, device: caller.device, account: caller.account ?? null, ...(await tenantStub(env, caller).stats(caller.tenant)) });
       }
 
       if (path.startsWith("/api/v1/images/")) {

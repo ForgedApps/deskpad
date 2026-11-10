@@ -367,6 +367,8 @@ function openSettings() {
   $<HTMLInputElement>("#s-top").checked = settings.always_on_top;
   $<HTMLInputElement>("#s-autostart").checked = settings.autostart;
   $("#google-error").textContent = "";
+  $("#settings-error").textContent = "";
+  $("#settings-saved").textContent = "";
   renderGoogleState();
   void renderCloud();
   $("#settings").classList.remove("hidden");
@@ -385,18 +387,34 @@ function readSettingsForm(): Settings {
   };
 }
 
-async function saveSettings(e: Event) {
-  e.preventDefault();
+// Settings save themselves: every control writes the whole form as soon as it
+// changes, so the dialog only needs a way to close.
+let savedNoteTimer = 0;
+let saveChain: Promise<void> = Promise.resolve();
+
+function saveSettings() {
   const next = readSettingsForm();
-  try {
-    await invoke("set_settings", { settings: next });
-  } catch (err) {
-    $("#google-error").textContent = String(err);
-    return;
-  }
-  settings = next;
+  // One write at a time, in order, so a quick second change can't land first.
+  saveChain = saveChain.then(async () => {
+    try {
+      await invoke("set_settings", { settings: next });
+    } catch (err) {
+      $("#settings-error").textContent = String(err);
+      return;
+    }
+    $("#settings-error").textContent = "";
+    const calendarChanged = next.tomorrow_until_hour !== settings.tomorrow_until_hour || next.show_all_day !== settings.show_all_day;
+    settings = next;
+    const note = $("#settings-saved");
+    note.textContent = "Saved";
+    window.clearTimeout(savedNoteTimer);
+    savedNoteTimer = window.setTimeout(() => (note.textContent = ""), 1500);
+    if (calendarChanged) loadMeetings(true);
+  });
+}
+
+function closeSettings() {
   $("#settings").classList.add("hidden");
-  loadMeetings(true);
 }
 
 async function connectGoogle() {
@@ -462,15 +480,20 @@ function wireUi() {
   $("#event-form").addEventListener("submit", submitEvent);
   $("#btn-clear-done").addEventListener("click", () => clearCompleted());
   $("#btn-journal").addEventListener("click", () => invoke("open_journal").catch((err) => console.error("open_journal failed", err)));
-  $("#settings-form").addEventListener("submit", saveSettings);
-  $("#btn-settings-cancel").addEventListener("click", () => $("#settings").classList.add("hidden"));
+  // Enter in a field must not submit the page away; changes save on their own.
+  $("#settings-form").addEventListener("submit", (e) => e.preventDefault());
+  $("#settings-form").addEventListener("change", (e) => {
+    if ((e.target as HTMLElement).closest("input, select")) saveSettings();
+  });
+  $("#btn-settings-close").addEventListener("click", closeSettings);
+  $("#btn-settings-x").addEventListener("click", closeSettings);
   $("#btn-quit").addEventListener("click", () => invoke("quit"));
   $("#settings").addEventListener("click", (e) => {
-    if (e.target === $("#settings")) $("#settings").classList.add("hidden");
+    if (e.target === $("#settings")) closeSettings();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      $("#settings").classList.add("hidden");
+      closeSettings();
       toggleEventForm(false);
     }
   });

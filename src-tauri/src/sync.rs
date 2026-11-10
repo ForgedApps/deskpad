@@ -12,7 +12,9 @@
 //! unless the row changed locally in the meantime, in which case the local
 //! change stays and goes out on the next cycle.
 //!
-//! Nothing here runs until `cloud.json` holds a URL and a device token.
+//! Nothing here runs until this PC is signed in: `cloud.json` then holds the
+//! server address and a session token obtained through the device sign-in
+//! flow (`begin_sign_in`, `finish_sign_in`), never typed by hand.
 
 use crate::calendar::Meeting;
 use crate::rank;
@@ -136,6 +138,11 @@ struct SyncResponse {
 
 // ---------- persisted state ----------
 
+/// The Deskpad cloud this build signs in to unless told otherwise.
+pub const DEFAULT_URL: &str = "https://deskpad-cloud.jgentes.workers.dev";
+/// How the Worker knows the device flow was started by the Windows app.
+const CLIENT_ID: &str = "deskpad-desktop";
+
 /// `cloud.json`: where to sync and as whom. Never synced, never logged.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -166,9 +173,11 @@ impl CloudConfig {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyncState {
-    /// This device's name as the server knows it (it comes from the token
+    /// This device's name as the server knows it (it comes from the session
     /// there, and is how our own writes are recognised when they come back).
     pub device: String,
+    /// The signed-in account's email, for display.
+    pub account: String,
     /// Fingerprint of the config the rest of this state belongs to.
     pub remote: String,
     /// Highest server change number applied.
@@ -417,6 +426,10 @@ pub struct CloudStatus {
     pub configured: bool,
     pub url: String,
     pub device: String,
+    /// The signed-in account's email, once the server has told us.
+    pub account: String,
+    /// Set while a sign-in waits for approval in the browser: the code to compare.
+    pub signing_in: Option<String>,
     /// Unix seconds of the last cycle that completed.
     pub last_sync: Option<i64>,
     pub error: Option<String>,
@@ -435,6 +448,8 @@ pub struct Cloud {
     pub kick: AtomicBool,
     /// Let the next cycle push a mass deletion.
     pub allow_mass_delete: AtomicBool,
+    /// Abandon the sign-in that is waiting for approval.
+    pub cancel_sign_in: AtomicBool,
     dir: PathBuf,
 }
 
@@ -446,6 +461,7 @@ impl Cloud {
             config: Mutex::new(config),
             kick: AtomicBool::new(false),
             allow_mass_delete: AtomicBool::new(false),
+            cancel_sign_in: AtomicBool::new(false),
             dir: dir.to_path_buf(),
         }
     }
@@ -460,6 +476,11 @@ impl Cloud {
             s.url = config.url.clone();
             s.error = None;
             s.mass_delete = None;
+            s.signing_in = None;
+            s.last_sync = None;
+            if !s.configured {
+                s.account.clear();
+            }
         }
         *self.config.lock().unwrap() = config;
         self.kick.store(true, Ordering::Relaxed);
@@ -494,16 +515,105 @@ async fn post_sync(client: &reqwest::Client, cfg: &CloudConfig, since: i64, rows
         .map_err(|e| format!("Could not reach the sync server: {}", e.without_url()))?;
     match res.status().as_u16() {
         200 => res.json().await.map_err(|e| format!("The sync server sent something unexpected: {e}")),
-        401 => Err("The sync server did not accept this device's token.".into()),
+        401 => Err(SIGNED_OUT.into()),
         code => Err(format!("The sync server answered {code}.")),
     }
 }
 
-/// Ask the server who this token is.
-async fn whoami(client: &reqwest::Client, cfg: &CloudConfig) -> Result<String, String> {
+/// A device sign-in in progress (RFC 8628): the page to open, the code the
+/// user compares there, and what to poll with.
+#[derive(Deserialize)]
+pub struct DeviceCode {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri_complete: String,
+    #[serde(default)]
+    pub interval: u64,
+    #[serde(default)]
+    pub expires_in: u64,
+}
+
+fn auth_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder().timeout(Duration::from_secs(20)).user_agent("Deskpad").build().map_err(|e| e.to_string())
+}
+
+/// Start a sign-in: ask the server for a device code.
+pub async fn begin_sign_in(url: &str) -> Result<DeviceCode, String> {
+    let res = auth_client()?
+        .post(format!("{url}/api/auth/device/code"))
+        .header("origin", url)
+        .json(&serde_json::json!({ "client_id": CLIENT_ID }))
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach the Deskpad server: {}", e.without_url()))?;
+    if !res.status().is_success() {
+        return Err(format!("The Deskpad server refused to start a sign-in ({}).", res.status().as_u16()));
+    }
+    let code: DeviceCode = res.json().await.map_err(|e| format!("The Deskpad server sent something unexpected: {e}"))?;
+    // The page to open must be on the server we asked, whatever the answer says.
+    if !code.verification_uri_complete.starts_with(&format!("{url}/")) {
+        return Err("The Deskpad server sent a sign-in page on another site.".into());
+    }
+    Ok(code)
+}
+
+/// Wait for the user to approve in the browser; returns this device's session token.
+pub async fn finish_sign_in(url: &str, code: &DeviceCode, cancel: &AtomicBool) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Answer {
+        access_token: Option<String>,
+        error: Option<String>,
+    }
+    let client = auth_client()?;
+    let mut interval = code.interval.clamp(2, 30);
+    let deadline = Instant::now() + Duration::from_secs(code.expires_in.clamp(60, 1800));
+    while Instant::now() < deadline {
+        for _ in 0..interval * 4 {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Sign-in cancelled.".into());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let res = match client
+            .post(format!("{url}/api/auth/device/token"))
+            .header("origin", url)
+            .json(&serde_json::json!({ "grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": code.device_code, "client_id": CLIENT_ID }))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            // A dropped connection while waiting is not the end of the sign-in.
+            Err(_) => continue,
+        };
+        let answer: Answer = res.json().await.unwrap_or(Answer { access_token: None, error: Some("server_error".into()) });
+        if let Some(token) = answer.access_token.filter(|t| t.len() >= 32) {
+            return Ok(token);
+        }
+        match answer.error.as_deref() {
+            Some("authorization_pending") => {}
+            Some("slow_down") => interval = (interval + 5).min(30),
+            Some("access_denied") => return Err("The sign-in was cancelled in the browser.".into()),
+            Some("expired_token") => return Err("The sign-in took too long. Try again.".into()),
+            _ => return Err("The Deskpad server could not complete the sign-in.".into()),
+        }
+    }
+    Err("The sign-in took too long. Try again.".into())
+}
+
+/// End this device's session on the server (best effort).
+pub async fn sign_out(cfg: &CloudConfig) {
+    if let Ok(client) = auth_client() {
+        let _ = client.post(format!("{}/api/auth/sign-out", cfg.base())).header("origin", cfg.base()).bearer_auth(&cfg.token).json(&serde_json::json!({})).send().await;
+    }
+}
+
+/// Ask the server who this session is: (device, account email).
+async fn whoami(client: &reqwest::Client, cfg: &CloudConfig) -> Result<(String, String), String> {
     #[derive(Deserialize)]
     struct Status {
         device: String,
+        #[serde(default)]
+        account: Option<String>,
     }
     let res = client
         .get(format!("{}/api/v1/status", cfg.base()))
@@ -512,11 +622,17 @@ async fn whoami(client: &reqwest::Client, cfg: &CloudConfig) -> Result<String, S
         .await
         .map_err(|e| format!("Could not reach the sync server: {}", e.without_url()))?;
     match res.status().as_u16() {
-        200 => Ok(res.json::<Status>().await.map_err(|e| format!("The sync server sent something unexpected: {e}"))?.device),
-        401 => Err("The sync server did not accept this device's token.".into()),
+        200 => {
+            let s = res.json::<Status>().await.map_err(|e| format!("The sync server sent something unexpected: {e}"))?;
+            Ok((s.device, s.account.unwrap_or_default()))
+        }
+        401 => Err(SIGNED_OUT.into()),
         code => Err(format!("The sync server answered {code}.")),
     }
 }
+
+/// What a 401 means to the user.
+const SIGNED_OUT: &str = "This PC is no longer signed in. Sign in again to keep syncing.";
 
 /// One full exchange: push what changed, pull what's new, until both are
 /// done, then the pictures. Returns whether the windows should reload.
@@ -525,7 +641,7 @@ async fn cycle(store: &Store, client: &reqwest::Client, cfg: &CloudConfig, state
         state.reset_for(cfg.fingerprint());
     }
     if state.device.is_empty() {
-        state.device = whoami(client, cfg).await?;
+        (state.device, state.account) = whoami(client, cfg).await?;
     }
     // A device with no history pulls before it pushes, so rows both sides
     // hold settle on the server's copy instead of being overwritten by ours.
@@ -617,7 +733,7 @@ async fn sync_images(store: &Store, client: &reqwest::Client, cfg: &CloudConfig,
             200 | 400 | 413 | 415 => {
                 state.uploaded.insert(name.clone());
             }
-            401 => return Err("The sync server did not accept this device's token.".into()),
+            401 => return Err(SIGNED_OUT.into()),
             code => return Err(format!("The sync server answered {code} to a picture upload.")),
         }
     }
@@ -699,6 +815,7 @@ pub async fn run(app: AppHandle) {
         status.configured = true;
         status.url = cfg.url.clone();
         status.device = state.device.clone();
+        status.account = state.account.clone();
         status.rows = state.base.len();
         match result {
             Ok(_) => {
@@ -714,8 +831,18 @@ pub async fn run(app: AppHandle) {
             }
             Err(CycleError::Other(e)) => {
                 eprintln!("[sync] {e}");
+                let signed_out = e == SIGNED_OUT;
                 status.error = Some(e);
                 backoff = (backoff * 2).clamp(Duration::from_secs(30), Duration::from_secs(600));
+                if signed_out {
+                    // The session is gone (signed out elsewhere, or expired). Drop the
+                    // dead token so Settings offers "Sign in" again, and say why.
+                    drop(status);
+                    cloud.set_config(CloudConfig { url: cfg.url.clone(), token: String::new() });
+                    status = cloud.status.lock().unwrap();
+                    status.error = Some(SIGNED_OUT.into());
+                    backoff = Duration::ZERO;
+                }
             }
         }
         drop(status);

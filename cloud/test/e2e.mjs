@@ -23,7 +23,8 @@ const table = {
 };
 const state = mkdtempSync(join(tmpdir(), "deskpad-cloud-test-"));
 const vars = join(state, "vars");
-writeFileSync(vars, `DEVICE_TOKENS=${JSON.stringify(table)}\n`);
+const ADMIN = randomBytes(24).toString("hex");
+writeFileSync(vars, `DEVICE_TOKENS=${JSON.stringify(table)}\nBETTER_AUTH_SECRET=${randomBytes(32).toString("hex")}\nADMIN_KEY=${ADMIN}\n`);
 
 let failures = 0;
 const ok = (cond, what) => {
@@ -64,6 +65,14 @@ try {
     up = await fetch(`${BASE}/health`).then((r) => r.ok).catch(() => false);
   }
   if (!up) throw new Error(`server did not start:\n${log}`);
+
+  // --- control plane ---
+  const ORIGIN0 = `http://127.0.0.1:${PORT}`;
+  ok((await call("x".repeat(48), "/status")).status === 503, "before the tables exist, a session check says unavailable, not signed out");
+  ok((await fetch(`${ORIGIN0}/api/admin/migrate`, { method: "POST" })).status === 404, "migrate without the admin key is not found");
+  const mig = await fetch(`${ORIGIN0}/api/admin/migrate`, { method: "POST", headers: { "x-admin-key": ADMIN } });
+  ok(mig.status === 200, "migrate with the admin key creates the tables");
+  ok((await fetch(`${ORIGIN0}/api/admin/migrate`, { method: "POST", headers: { "x-admin-key": ADMIN } })).status === 200, "migrate is repeatable");
 
   // --- auth ---
   ok((await call(null, "/status")).status === 401, "no token is refused");
@@ -131,6 +140,61 @@ try {
   // A tenant named in the request must be ignored.
   const sneaky = await fetch(`${BASE}/export?tenant=tenant-a`, { headers: { authorization: `Bearer ${tok.b1}`, "x-tenant": "tenant-a" } });
   ok((await sneaky.json()).tenant === "tenant-b", "a tenant named in the URL or a header is ignored");
+
+  // --- accounts (Better Auth) ---
+  const ORIGIN = `http://127.0.0.1:${PORT}`;
+  const auth = (path, body, token) =>
+    fetch(`${ORIGIN}/api/auth${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { origin: ORIGIN, ...(body === undefined ? {} : { "content-type": "application/json" }), ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  const pw = randomBytes(12).toString("hex");
+  const signUp = await auth("/sign-up/email", { email: "owner@example.test", password: pw, name: "Owner" });
+  const web = signUp.headers.get("set-auth-token");
+  ok(signUp.status === 200 && !!web, "the first account can sign up and gets a session");
+  const second = await auth("/sign-up/email", { email: "other@example.test", password: pw, name: "Other" });
+  ok(second.status === 403, "a second sign-up is refused while SIGNUP is \"first\"");
+  ok((await auth("/sign-in/email", { email: "owner@example.test", password: "wrong-password-x" })).status === 401, "a wrong password is refused");
+
+  st = await (await call(web, "/status")).json();
+  ok(st.account === "owner@example.test" && /^[a-z0-9_-]{3,64}$/.test(st.tenant), "a session resolves to the account's tenant");
+  const ownerTenant = st.tenant;
+  ok(ownerTenant !== "tenant-a" && ownerTenant !== "tenant-b" && st.rows === 0, "the account's tenant is its own and starts empty");
+
+  // The desktop's sign-in: device code, approval in the browser, token.
+  const dc = await (await auth("/device/code", { client_id: "deskpad-desktop" })).json();
+  ok(!!dc.device_code && !!dc.user_code && String(dc.verification_uri_complete).includes("/device?user_code="), "the desktop gets a device code and a page to open");
+  ok((await auth("/device/code", { client_id: "someone-else" })).status === 400, "other clients cannot start a device sign-in");
+  const poll = () => auth("/device/token", { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: dc.device_code, client_id: "deskpad-desktop" });
+  const pending = await poll();
+  ok(pending.status === 400 && (await pending.json()).error === "authorization_pending", "polling before approval says pending");
+  ok((await auth("/device/approve", { userCode: dc.user_code })).status !== 200, "nobody can approve without being signed in");
+  ok((await auth(`/device?user_code=${dc.user_code}`, undefined, web)).status === 200, "the signed-in browser claims the code");
+  ok((await auth("/device/approve", { userCode: dc.user_code }, web)).status === 200, "and approves it");
+  await new Promise((r) => setTimeout(r, 3500));
+  const granted = await (await poll()).json();
+  ok(typeof granted.access_token === "string" && granted.access_token.length >= 32, "the desktop receives its own session token");
+  const dst = await (await call(granted.access_token, "/status")).json();
+  ok(dst.tenant === ownerTenant && dst.device !== st.device, "the desktop lands in the same tenant as a separate device");
+  r = await sync(granted.access_token, 0, [row("900", "from the desktop", Date.now())]);
+  ok(r.rows.length === 1, "the desktop session can sync");
+  r = await sync(web, 0);
+  ok(r.rows.length === 1 && r.rows[0].text === "from the desktop", "the browser session sees the desktop's row");
+  ok((await sync(tok.a1, 0)).rows.every((x) => x.text !== "from the desktop"), "token tenant A still sees none of the account's rows");
+
+  // Cookie sessions must not accept cross-site writes.
+  const cookie = (signUp.headers.get("set-cookie") ?? "").split(";")[0];
+  const body = JSON.stringify({ since: 0, rows: [], days: [] });
+  const xs = await fetch(`${BASE}/sync`, { method: "POST", headers: { cookie, origin: "https://evil.example", "content-type": "application/json" }, body });
+  ok(xs.status === 403, "a cross-site POST with the session cookie is refused");
+  const same = await fetch(`${BASE}/sync`, { method: "POST", headers: { cookie, origin: ORIGIN, "content-type": "application/json" }, body });
+  ok(same.status === 200, "the same POST from our own origin works with the cookie");
+
+  // Signing out ends the session.
+  ok((await auth("/sign-out", {}, granted.access_token)).status === 200, "the desktop signs out");
+  ok((await call(granted.access_token, "/status")).status === 401, "and its token stops working");
 } catch (err) {
   console.error(err);
   failures++;
