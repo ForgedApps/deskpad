@@ -1,0 +1,146 @@
+// End-to-end checks against a local `wrangler dev` (Miniflare): the merge
+// rules, paging-free pull, images, and above all tenant isolation. Run with
+// `npm test` in cloud/. It starts its own server on a scratch state directory
+// with throwaway tokens, so it never touches real data.
+
+import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const PORT = 8799;
+const BASE = `http://127.0.0.1:${PORT}/api/v1`;
+const sha = (b) => createHash("sha256").update(b).digest("hex");
+
+const tok = { a1: randomBytes(24).toString("hex"), a2: randomBytes(24).toString("hex"), b1: randomBytes(24).toString("hex") };
+const table = {
+  [sha(tok.a1)]: { tenant: "tenant-a", device: "a1" },
+  [sha(tok.a2)]: { tenant: "tenant-a", device: "a2" },
+  [sha(tok.b1)]: { tenant: "tenant-b", device: "b1" },
+};
+const state = mkdtempSync(join(tmpdir(), "deskpad-cloud-test-"));
+const vars = join(state, "vars");
+writeFileSync(vars, `DEVICE_TOKENS=${JSON.stringify(table)}\n`);
+
+let failures = 0;
+const ok = (cond, what) => {
+  console.log(`${cond ? "ok  " : "FAIL"} ${what}`);
+  if (!cond) failures++;
+};
+
+const call = (token, path, init = {}) =>
+  fetch(BASE + path, { ...init, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(init.headers ?? {}) } });
+const sync = async (token, since, rows = [], days = []) => {
+  const r = await call(token, "/sync", { method: "POST", body: JSON.stringify({ since, rows, days }), headers: { "content-type": "application/json" } });
+  if (!r.ok) throw new Error(`sync ${r.status}: ${await r.text()}`);
+  return r.json();
+};
+const row = (id, text, updated_at, extra = {}) => ({
+  id, text, kind: "note", done: false, parent: null, rank: "V", created_at: 1_794_000_000, done_at: null,
+  schedule: null, archived_at: null, updated_at, updated_by: "ignored", deleted: false, ...extra,
+});
+
+const server = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--persist-to", join(state, "persist"), "--env-file", vars, "--show-interactive-dev-session=false"], {
+  cwd: root,
+  shell: true,
+  stdio: ["ignore", "pipe", "pipe"],
+});
+let log = "";
+server.stdout.on("data", (d) => (log += d));
+server.stderr.on("data", (d) => (log += d));
+
+const stop = () => {
+  if (process.platform === "win32") spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"], { shell: true });
+  else server.kill("SIGTERM");
+};
+
+try {
+  let up = false;
+  for (let i = 0; i < 120 && !up; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    up = await fetch(`${BASE}/health`).then((r) => r.ok).catch(() => false);
+  }
+  if (!up) throw new Error(`server did not start:\n${log}`);
+
+  // --- auth ---
+  ok((await call(null, "/status")).status === 401, "no token is refused");
+  ok((await call("x".repeat(48), "/status")).status === 401, "unknown token is refused");
+  ok((await call(tok.a1, "/status")).status === 200, "known token is accepted");
+
+  // --- push, pull, echo ---
+  const t = Date.now();
+  let r = await sync(tok.a1, 0, [row("100", "first", t), row("101", "child", t, { parent: "100" })]);
+  ok(r.rows.length === 2 && r.seq === 2, "push returns the accepted rows with seq");
+  ok(r.rows.every((x) => x.updated_by === "a1"), "device comes from the token, not the body");
+  r = await sync(tok.a2, 0);
+  ok(r.rows.length === 2 && r.rows[1].parent === "100", "second device pulls both rows");
+  const a2since = r.seq;
+  r = await sync(tok.a2, a2since);
+  ok(r.rows.length === 0 && r.seq === a2since, "nothing new means an empty pull");
+
+  // --- last writer wins ---
+  r = await sync(tok.a2, a2since, [row("100", "edited on a2", t + 10)]);
+  ok(r.rows.length === 1 && r.rows[0].text === "edited on a2", "newer edit is accepted");
+  r = await sync(tok.a1, 2, [row("100", "stale edit from a1", t + 5)]);
+  ok(r.rows.some((x) => x.id === "100" && x.text === "edited on a2"), "older edit is refused and the winner comes back");
+  r = await sync(tok.a1, r.seq, [row("100", "stale again", t + 5)]);
+  ok(r.rows.length === 1 && r.rows[0].text === "edited on a2", "a refused row returns the server copy even when already seen");
+  r = await sync(tok.a1, r.seq, [row("100", "tie from a1", t + 10)]);
+  ok(r.rows[0].text === "edited on a2", "a tie goes to the larger device id (a2 over a1)");
+
+  // --- tombstones and archive ---
+  r = await sync(tok.a1, r.seq, [row("101", "", t + 20, { deleted: true }), row("100", "edited on a2", t + 30, { archived_at: 1_794_000_500 })]);
+  ok(r.rows.find((x) => x.id === "101")?.deleted === true, "delete is a tombstone");
+  ok(r.rows.find((x) => x.id === "100")?.archived_at === 1_794_000_500, "archiving is an edit");
+  let st = await (await call(tok.a1, "/status")).json();
+  ok(st.rows === 1 && st.deleted === 1, "status counts live rows and tombstones");
+
+  // --- validation ---
+  r = await sync(tok.a1, st.seq, [{ id: "bad id!", text: "x", updated_at: t, created_at: 1 }, { id: "200", updated_at: t, created_at: 1 }, row("201", "future", t + 86_400_000)]);
+  ok(r.rows.length === 1 && r.rows[0].id === "201" && r.rows[0].updated_at < t + 600_000, "bad rows are dropped and future clocks are capped");
+
+  // --- days ---
+  r = await sync(tok.a1, r.seq, [], [{ day: "2026-11-09", events: [{ title: "Standup" }], updated_at: t, updated_by: "x" }]);
+  ok(r.days.length === 1 && r.days[0].events[0].title === "Standup", "day events round-trip");
+
+  // --- images ---
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+  const name = `${sha(png).slice(0, 20)}.png`;
+  ok((await call(tok.a1, `/images/${name}`, { method: "PUT", body: png })).status === 200, "image upload");
+  ok((await call(tok.a1, `/images/${name}`, { method: "PUT", body: png })).status === 200, "image upload is idempotent");
+  const got = await call(tok.a2, `/images/${name}`);
+  ok(got.status === 200 && Buffer.from(await got.arrayBuffer()).equals(png), "another device of the tenant reads it back");
+  ok((await call(tok.a1, `/images/${"0".repeat(20)}.png`, { method: "PUT", body: png })).status === 400, "name must match the content hash");
+  ok((await call(tok.a1, "/images/..%2f..%2fx.png", { method: "PUT", body: png })).status === 400, "path tricks are refused");
+
+  // --- isolation ---
+  r = await sync(tok.b1, 0);
+  ok(r.rows.length === 0 && r.days.length === 0 && r.seq === 0, "tenant B starts empty: sees none of A's rows or days");
+  ok((await call(tok.b1, `/images/${name}`)).status === 404, "tenant B cannot read A's image");
+  ok((await call(tok.b1, `/images/${name}`, { method: "HEAD" })).status === 404, "tenant B cannot probe A's image");
+  r = await sync(tok.b1, 0, [row("100", "B's own row 100", t + 999)]);
+  ok(r.rows.length === 1 && r.seq === 1, "tenant B has its own change counter");
+  const ea = await (await call(tok.a1, "/export")).json();
+  const eb = await (await call(tok.b1, "/export")).json();
+  ok(ea.tenant === "tenant-a" && ea.rows.find((x) => x.id === "100")?.text === "edited on a2", "same id in B did not touch A's row");
+  ok(eb.tenant === "tenant-b" && eb.rows.length === 1 && eb.rows[0].text === "B's own row 100" && eb.days.length === 0, "B's export holds only B's data");
+  ok(!JSON.stringify(eb).includes("edited on a2") && !JSON.stringify(ea).includes("B's own"), "no text crosses between exports");
+  // A tenant named in the request must be ignored.
+  const sneaky = await fetch(`${BASE}/export?tenant=tenant-a`, { headers: { authorization: `Bearer ${tok.b1}`, "x-tenant": "tenant-a" } });
+  ok((await sneaky.json()).tenant === "tenant-b", "a tenant named in the URL or a header is ignored");
+} catch (err) {
+  console.error(err);
+  failures++;
+} finally {
+  stop();
+  await new Promise((r) => setTimeout(r, 1500));
+  try {
+    rmSync(state, { recursive: true, force: true });
+  } catch {}
+}
+
+console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
+process.exit(failures ? 1 : 0);

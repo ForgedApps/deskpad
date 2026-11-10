@@ -1,0 +1,26 @@
+{
+  // Deskpad cloud: sync API, one Durable Object per tenant, images in R2.
+  // See docs/sync-architecture.md.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "deskpad-cloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "TENANT", "class_name": "TenantDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TenantDO"] }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "deskpad-files" }],
+  // Secret (wrangler secret put DEVICE_TOKENS): JSON of sha256(token) -> { tenant, device }.
+  // Local dev reads it from .dev.vars.
+  "env": {
+    "staging": {
+      "name": "deskpad-cloud-staging",
+      "durable_objects": {
+        "bindings": [{ "name": "TENANT", "class_name": "TenantDO" }]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TenantDO"] }],
+      "r2_buckets": [{ "binding": "FILES", "bucket_name": "deskpad-files-staging" }]
+    }
+  }
+}
