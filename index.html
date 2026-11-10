@@ -119,6 +119,35 @@
           </div>
         </fieldset>
 
+        <fieldset>
+          <legend>Cloud sync</legend>
+          <div id="cloud-on" class="hidden">
+            <div id="cloud-state" class="cloud-state"></div>
+            <div class="google-row">
+              <button type="button" id="btn-cloud-sync">Sync now</button>
+              <button type="button" id="btn-cloud-force" class="danger hidden"></button>
+              <span class="spacer"></span>
+              <button type="button" id="btn-cloud-disconnect">Disconnect</button>
+            </div>
+          </div>
+          <div id="cloud-off">
+            <label>
+              Sync server
+              <input id="s-cloud-url" placeholder="https://…workers.dev" spellcheck="false" />
+            </label>
+            <label>
+              Device token
+              <input id="s-cloud-token" type="password" autocomplete="off" />
+              <small>
+                Backs up your notes, tasks and pictures and keeps your devices in step. Everything
+                stays on this PC as well and keeps working offline.
+              </small>
+            </label>
+            <button type="button" id="btn-cloud-connect" class="primary">Connect</button>
+            <div id="cloud-error" class="error"></div>
+          </div>
+        </fieldset>
+
         <label>
           Show tomorrow's events that start before
           <select id="s-tomorrow"></select>

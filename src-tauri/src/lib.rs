@@ -1,7 +1,9 @@
 mod appbar;
 mod calendar;
 mod google;
+mod rank;
 mod store;
+mod sync;
 
 use chrono::{DateTime, Utc};
 use google::Google;
@@ -26,14 +28,14 @@ struct SidebarHidden(Mutex<bool>);
 
 #[tauri::command]
 fn list_items(store: State<Store>) -> Vec<Item> {
-    store.items.lock().unwrap().clone()
+    store.list_for_frontend()
 }
 
 /// Replace the whole outline. The frontend owns ordering and nesting, so it
 /// sends the full list after every edit.
 #[tauri::command]
 fn set_items(store: State<Store>, items: Vec<Item>) {
-    *store.items.lock().unwrap() = items;
+    store.set_from_frontend(items);
     store.save_items();
 }
 
@@ -672,6 +674,38 @@ fn image_dir(store: State<Store>) -> String {
     store.dir.join("images").to_string_lossy().into_owned()
 }
 
+// ---------- Cloud sync ----------
+
+#[tauri::command]
+fn cloud_status(cloud: State<sync::Cloud>) -> sync::CloudStatus {
+    cloud.status.lock().unwrap().clone()
+}
+
+/// Point this PC at a sync server with a device token. An empty URL and token
+/// turn sync off; the local data is untouched either way.
+#[tauri::command]
+fn cloud_configure(app: AppHandle, cloud: State<sync::Cloud>, url: String, token: String) -> Result<(), String> {
+    let config = sync::CloudConfig { url: url.trim().trim_end_matches('/').to_string(), token: token.trim().to_string() };
+    let off = config.url.is_empty() && config.token.is_empty();
+    if !off && !config.ready() {
+        return Err("Enter the sync server's https:// address and the device token (at least 32 characters).".into());
+    }
+    cloud.set_config(config);
+    app.emit("cloud-status", ()).ok();
+    Ok(())
+}
+
+/// Sync now. `allow_mass_delete` lets a cycle that stopped because most rows
+/// are gone locally go ahead and delete them in the cloud as well.
+#[tauri::command]
+fn cloud_sync_now(cloud: State<sync::Cloud>, allow_mass_delete: Option<bool>) {
+    use std::sync::atomic::Ordering;
+    if allow_mass_delete == Some(true) {
+        cloud.allow_mass_delete.store(true, Ordering::Relaxed);
+    }
+    cloud.kick.store(true, Ordering::Relaxed);
+}
+
 /// Relay webview errors to stderr so they show up in `tauri dev` output.
 #[tauri::command]
 fn log_js(window: tauri::Window, msg: String) {
@@ -792,6 +826,7 @@ pub fn run() {
     refuse_if_sandboxed(&dir);
     let store = Store::load(dir.clone());
     let google = Google::load(&dir);
+    let cloud = sync::Cloud::load(&dir);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -812,6 +847,7 @@ pub fn run() {
         .manage(SidebarHidden::default())
         .manage(store)
         .manage(google)
+        .manage(cloud)
         .setup(|app| {
             if let Ok(resolved) = app.path().app_data_dir() {
                 let used = &app.state::<Store>().dir;
@@ -830,6 +866,7 @@ pub fn run() {
             }
 
             build_tray(app.handle())?;
+            tauri::async_runtime::spawn(sync::run(app.handle().clone()));
 
             if let Err(e) = app.global_shortcut().register(CAPTURE_SHORTCUT) {
                 eprintln!("failed to register {CAPTURE_SHORTCUT}: {e}");
@@ -862,6 +899,9 @@ pub fn run() {
             add_item,
             save_image,
             image_dir,
+            cloud_status,
+            cloud_configure,
+            cloud_sync_now,
             schedule_item,
             unschedule_item,
             list_archive,

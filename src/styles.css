@@ -787,14 +787,35 @@ legend {
   font-size: 12px;
   padding: 0 4px;
 }
+.cloud-state {
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 8px;
+  color: var(--fg-2);
+}
+.cloud-state.ok {
+  color: var(--now);
+}
+.cloud-state.error {
+  color: var(--danger);
+}
+.google-row .spacer {
+  flex: 1;
+}
 .google-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 .google-row.hidden,
-#google-disconnected.hidden {
+#google-disconnected.hidden,
+#cloud-on.hidden,
+#cloud-off.hidden,
+#btn-cloud-force.hidden {
   display: none;
+}
+#cloud-on .google-row {
+  gap: 8px;
 }
 .ok {
   color: var(--now);

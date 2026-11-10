@@ -39,6 +39,10 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
   several plain lines makes a row per line, indented lines nested. Paste an
   image (a screenshot, a picture copied from a page) and it is stored once and
   shown in the row scaled to the sidebar's width.
+- **Cloud sync** (optional): Settings → Cloud sync connects this PC to a
+  Deskpad sync server (`cloud/`, a Cloudflare Worker you deploy), which backs
+  up notes, tasks, recorded days and pictures and keeps several devices in
+  step. Everything stays local too and works offline.
 - **Journal**: the outline is your workspace, the journal is the record. Open
   it from the Notes header ("journal") for a resizable window with a timeline
   of days down the left and one day in the middle: that day's calendar events

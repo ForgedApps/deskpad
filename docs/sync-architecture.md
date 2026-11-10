@@ -1,7 +1,9 @@
 # Deskpad cloud: sync, backup and multi-tenancy
 
-Status: design only. Nothing in this document is built yet. It describes the
-infrastructure Deskpad will sync through so that a later public sign-up
+Status: step 1 of §11 is built and tested locally (see "What is built" at the
+end); it is not deployed yet, and auth is still hand-issued device tokens.
+The rest is design. This document describes the infrastructure Deskpad syncs
+through so that a later public sign-up
 ("Deskpad is a note and calendar app for Windows and mobile") can be added
 without reworking storage, and so that one tenant's data can never be read or
 written by another.
@@ -373,3 +375,47 @@ only A's rows and images, including after deleting B.
 5. Sign-up page, email, billing: remove the allowlist, add the email and
    passkey plugins and the website. No change below the Worker's auth
    middleware.
+
+## 12. What is built (step 1) and where it differs from the text above
+
+Built: `cloud/` (Worker, `TenantDO`, R2 images, `/sync`, `/export`, `/status`),
+`shared/protocol.ts`, and on the desktop `rank.rs`, `sync.rs`, the Cloud sync
+section in Settings, and `Store::set_from_frontend`. Images are included
+(step 2's first half). `npm test` and `npm run test:desktop` in `cloud/` cover
+the merge rules, cross-tenant isolation, and the real desktop engine against a
+local Worker.
+
+Deliberate differences from the design, all smaller than what was sketched:
+
+- **Row ids stay numeric** (§5.1). The existing scheme, clock in microseconds
+  with a random last three digits, already makes a cross-device collision a
+  same-millisecond one-in-a-thousand event, and it stays below 2^53. Ids are
+  decimal strings on the wire and in the Durable Object, so a later client may
+  use other ids; the desktop skips rows whose id it cannot hold.
+- **No `updated_at` on `Item`** (§5.5). The desktop does not hook every write.
+  `sync_state.json` keeps, per row, the copy last agreed with the server, and
+  a cycle diffs the store against it. That covers every way a row can change
+  and keeps `tasks.json` free of sync bookkeeping. Changes are stamped when
+  the diff first notices them (within seconds while the app runs) and keep
+  that stamp until acknowledged.
+- **Plain last-writer-wins per row** (§5.3); the "a completion survives" rule
+  is not implemented.
+- **Tombstones keep the row's content** on the server (§5.3 said cleared), so
+  a deletion made by mistake is recoverable from an export. Tombstone GC is
+  not built.
+- **The stale-list problem** was not in the design: the sidebar saves the
+  whole list, so a save racing a pull would delete or revert what the pull
+  just brought. `set_from_frontend` merges three ways against what the
+  sidebar last loaded.
+- **A mass-deletion guard**: when more than half of the synced rows (and more
+  than 20) are gone locally, the cycle stops and asks, instead of deleting
+  them remotely. This is what protects the cloud copy from a lost or reset
+  `tasks.json`.
+- **No WebSocket yet** (§5.4): the desktop pushes two seconds after edits
+  settle and pulls every minute.
+- **Auth is `DEVICE_TOKENS`**, a Worker secret mapping token hashes to
+  `{ tenant, device }` (`cloud/scripts/issue-token.mjs`). `authenticate` in
+  `cloud/src/index.ts` is the one function Better Auth replaces (§6).
+
+Not built: deployment, nightly exports and GC (§7), quotas beyond a row cap
+(§8), the control-plane database, Better Auth, the PWA.

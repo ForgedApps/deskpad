@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { renderCloud, wireCloud } from "./cloud";
 import { initImages } from "./images";
 import { clearCompleted, focusItem, loadItems } from "./outline";
 import { dayKey } from "./text";
@@ -367,6 +368,7 @@ function openSettings() {
   $<HTMLInputElement>("#s-autostart").checked = settings.autostart;
   $("#google-error").textContent = "";
   renderGoogleState();
+  void renderCloud();
   $("#settings").classList.remove("hidden");
 }
 
@@ -439,6 +441,7 @@ function wireUi() {
   $("#btn-hide").addEventListener("click", () => invoke("hide_sidebar"));
   $("#btn-google-connect").addEventListener("click", connectGoogle);
   $("#btn-google-disconnect").addEventListener("click", disconnectGoogle);
+  wireCloud();
   $("#btn-refresh").addEventListener("click", () => loadMeetings(true));
   $("#btn-prev-day").addEventListener("click", () => showDay(dayOffset - 1));
   $("#btn-next-day").addEventListener("click", () => showDay(dayOffset + 1));

@@ -42,6 +42,8 @@ export interface Item {
   /** When the task was last marked done; null when open. */
   done_at: number | null;
   schedule: Schedule | null;
+  /** Sync order among siblings; owned by the backend and only carried along here. */
+  rank?: string;
 }
 
 export interface ArchivedItem extends Item {

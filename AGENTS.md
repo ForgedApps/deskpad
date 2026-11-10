@@ -12,7 +12,9 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | --- | --- |
 | `src-tauri/src/lib.rs` | Tauri commands, window setup, tray, global shortcut, alert window |
 | `src-tauri/src/appbar.rs` | Win32 `SHAppBarMessage` docking and native hide/show |
-| `src-tauri/src/store.rs` | `Item`/`Settings` persistence, task-marker parsing, archive, atomic writes, backups |
+| `src-tauri/src/store.rs` | `Item`/`Settings` persistence, task-marker parsing, archive, atomic writes, backups, `set_from_frontend` merge |
+| `src-tauri/src/rank.rs` | Sibling order for syncing: `between`, `repair` (run on every save), `sort_siblings` |
+| `src-tauri/src/sync.rs` | Cloud sync engine: diff against `sync_state.json`, push/pull, images, the background loop |
 | `src-tauri/src/calendar.rs` | The shared `Meeting` type (ICS support was removed; Google only) |
 | `src-tauri/src/google.rs` | Google OAuth (PKCE + loopback), Calendar read, event creation |
 | `src-tauri/nsis/installer.nsi` | Custom NSIS installer template (see below) |
@@ -25,7 +27,10 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |
 | `index.html`, `capture.html`, `tab.html`, `alert.html` | One page per window (Vite multi-page) |
-| `docs/sync-architecture.md` | Design for cloud sync, backup and multi-tenancy on Cloudflare (not built yet) |
+| `src/cloud.ts` | Settings → Cloud sync: connect a PC, status, "sync now" |
+| `cloud/` | The sync Worker: `src/index.ts` (auth, routes), `src/tenant-do.ts` (one Durable Object per tenant), tests, `scripts/issue-token.mjs` |
+| `shared/protocol.ts` | Wire types shared by the Worker and (later) the web app; `sync.rs` mirrors them |
+| `docs/sync-architecture.md` | Design for cloud sync, backup and multi-tenancy on Cloudflare; §12 says what is built |
 
 Windows are declared in `src-tauri/tauri.conf.json`; every window label must
 also be listed in `src-tauri/capabilities/default.json`.
@@ -39,7 +44,7 @@ also be listed in `src-tauri/capabilities/default.json`.
   side on change. **Only one Deskpad can run at a time**: a second instance
   fights the first for the right edge and the Ctrl+Space shortcut. Quit the
   installed app from its tray icon before running dev, and vice versa.
-- Checks: `cargo test` in `src-tauri` (marker parsing, store safety, archive), `npx tsc --noEmit -p .` and `npx vite build` at the root.
+- Checks: `cargo test` in `src-tauri` (marker parsing, store safety, archive, ranks, sync merge), `npx tsc --noEmit -p .` and `npx vite build` at the root. In `cloud/`: `npx tsc --noEmit`, `npm test` (Worker against `wrangler dev`) and `npm run test:desktop` (the Rust engine against `wrangler dev`). Both start and stop their own server on ports 8799/8798; if a run is killed midway, stop leftover `workerd.exe` processes before the next one or it will talk to the old server.
 - UI changes can be exercised without the native app by opening
   `http://localhost:1420/` in a browser and installing a mock
   `window.__TAURI_INTERNALS__` whose `invoke` implements the commands the page
@@ -88,7 +93,9 @@ you ever need to inspect the real folders from a sandboxed shell, a UNC path
 
 User data lives in `%APPDATA%\com.jgentes.deskpad\` (`tasks.json`,
 `archive.json`, `day_events.json`, `settings.json`, `google_tokens.json`,
-`backups\`, `images\`). The installed app and the dev build share it.
+`backups\`, `images\`, and for sync `cloud.json` (server address and device
+token; a secret, never echo or commit it) and `sync_state.json`). The
+installed app and the dev build share it.
 
 1. **Register state before windows exist.** `Store` and `Google` are loaded in
    `run()` before `tauri::Builder` runs, because config windows are created
@@ -106,6 +113,16 @@ User data lives in `%APPDATA%\com.jgentes.deskpad\` (`tasks.json`,
    when autostart is on, and makes a debug build delete a Run entry that
    points at a `target\debug` path (left behind by builds older than the
    guard). Keep both halves.
+
+5. **The sidebar's whole-list save is merged, not trusted.** `set_items` goes
+   through `Store::set_from_frontend`, which compares the incoming list with
+   what the sidebar last loaded (`Store.seen`) and only takes rows the user
+   touched, added or removed. Without it a save racing a pull (or the capture
+   popup) would delete or revert rows the sidebar had not seen yet.
+6. **Sync never deletes in bulk unasked.** A cycle that finds more than half
+   of the synced rows gone locally stops with an error (`CycleError::MassDelete`)
+   until the user confirms in Settings. A lost or reset `tasks.json` must not
+   empty the cloud copy.
 
 If you add a new persisted file, use `load_json` and `write_atomic`.
 
@@ -225,6 +242,20 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   image: `.row .txt img.pic { max-width: 100% }` scales it to the column, so
   no thumbnails exist. Nothing deletes image files when rows go; they are
   small and deduplicated. `strip_inline`/`stripInline` drop the marker.
+- Sync (`sync.rs`, design in `docs/sync-architecture.md`): local files stay
+  the working copy. No command is hooked; a cycle diffs the store (outline +
+  archive as wire rows, day events) against `SyncState.base`, the per-row copy
+  last agreed with the server, stamps what differs (`pending`, a hybrid clock)
+  and pushes it with tombstones for vanished rows. `apply_rows` folds the
+  answer in unless the row changed locally since the copy sent or agreed.
+  `plan_rows`/`apply_rows`/`plan_days`/`apply_days` are pure and tested with
+  two simulated devices; keep them pure. The loop (`run`) pushes two seconds
+  after `Store.version` stops moving and pulls every minute; it idles until
+  `cloud.json` is set. `Item.rank` orders siblings across devices: the list
+  order is the truth locally (`rank::repair` in `save_items` re-ranks only
+  moved or new rows), and after a pull siblings are sorted by rank. The
+  frontend never sets `rank`. New row ids on both sides are the clock in
+  microseconds with a random last three digits (`new_id`, `newItem`).
 - Days are the record, the outline is the workspace. A row's day is derived
   from `created_at` (local), `done_at` is set/cleared by the frontend when a
   task is toggled, and `schedule.start` places it on a day. The journal

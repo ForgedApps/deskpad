@@ -1,8 +1,9 @@
 use crate::calendar::Meeting;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// One outline row. `kind` is "note" or "task"; `parent` nests it one level
@@ -26,6 +27,34 @@ pub struct Item {
     /// Set when the task is on the calendar.
     #[serde(default)]
     pub schedule: Option<Schedule>,
+    /// Order among siblings for syncing (see `rank.rs`). Assigned and kept in
+    /// step with the list order on every save; the frontend never sets it.
+    #[serde(default)]
+    pub rank: String,
+}
+
+impl Item {
+    /// Whether two copies of a row say the same thing, leaving `rank` aside
+    /// (the backend owns that field).
+    pub fn same_content(&self, other: &Item) -> bool {
+        self.id == other.id
+            && self.text == other.text
+            && self.kind == other.kind
+            && self.done == other.done
+            && self.parent == other.parent
+            && self.created_at == other.created_at
+            && self.done_at == other.done_at
+            && self.schedule == other.schedule
+    }
+}
+
+/// A new row id: the clock in microseconds with a random last three digits,
+/// the same scheme `newItem` in `outline.ts` uses. It stays below 2^53 so
+/// JavaScript holds it exactly, and two devices would have to create a row in
+/// the same millisecond and draw the same number to collide.
+pub fn new_id() -> u64 {
+    use rand::Rng;
+    chrono::Utc::now().timestamp_millis() as u64 * 1000 + rand::thread_rng().gen_range(0..1000)
 }
 
 /// A task's place on the calendar: the event window (unix seconds) and the
@@ -57,7 +86,7 @@ impl Item {
         }
         let now = chrono::Utc::now();
         Some(Self {
-            id: now.timestamp_millis() as u64,
+            id: new_id(),
             text,
             kind: kind.into(),
             done: false,
@@ -65,6 +94,7 @@ impl Item {
             created_at: now.timestamp(),
             done_at: None,
             schedule: None,
+            rank: String::new(),
         })
     }
 }
@@ -147,6 +177,13 @@ pub struct Store {
     /// (`YYYY-MM-DD`). The journal shows these when Google can't be reached
     /// or the connection is gone, so a past day keeps its context.
     pub day_events: Mutex<BTreeMap<String, Vec<Meeting>>>,
+    /// The outline as the sidebar last loaded or sent it. `set_from_frontend`
+    /// compares against this to tell what the user changed from what merely
+    /// went stale while a pull or the capture popup changed the store.
+    pub seen: Mutex<Vec<Item>>,
+    /// Bumped on every write of rows, archive or day events; the sync loop
+    /// watches it to know there may be something to push.
+    pub version: AtomicU64,
 }
 
 impl Store {
@@ -154,6 +191,7 @@ impl Store {
         fs::create_dir_all(&dir).ok();
         let mut items: Vec<Item> = load_json(&dir.join("tasks.json")).unwrap_or_default();
         normalize(&mut items);
+        crate::rank::repair(&mut items);
         let archive = load_json(&dir.join("archive.json")).unwrap_or_default();
         let settings = load_json(&dir.join("settings.json")).unwrap_or_default();
         let day_events = load_json(&dir.join("day_events.json")).unwrap_or_default();
@@ -163,7 +201,76 @@ impl Store {
             archive: Mutex::new(archive),
             settings: Mutex::new(settings),
             day_events: Mutex::new(day_events),
+            seen: Mutex::new(Vec::new()),
+            version: AtomicU64::new(1),
         }
+    }
+
+    /// The outline for the sidebar, remembered as what it has seen.
+    pub fn list_for_frontend(&self) -> Vec<Item> {
+        let items = self.items.lock().unwrap().clone();
+        *self.seen.lock().unwrap() = items.clone();
+        items
+    }
+
+    /// Take the sidebar's whole-list save without undoing what changed behind
+    /// its back. The sidebar always sends every row, so a row a pull just
+    /// added would look deleted, and one a pull just edited would be put back
+    /// to its old text. Comparing with `seen` tells the two apart: only rows
+    /// the user actually touched (or added, or removed) are taken from
+    /// `incoming`; everything else keeps the store's copy.
+    pub fn set_from_frontend(&self, incoming: Vec<Item>) {
+        let mut items = self.items.lock().unwrap();
+        let mut seen = self.seen.lock().unwrap();
+        let seen_by_id: HashMap<u64, &Item> = seen.iter().map(|i| (i.id, i)).collect();
+        let stored_by_id: HashMap<u64, &Item> = items.iter().map(|i| (i.id, i)).collect();
+        let incoming_ids: HashSet<u64> = incoming.iter().map(|i| i.id).collect();
+        // Did the user add, remove, move or re-nest anything?
+        let shape = |v: &[Item]| v.iter().map(|i| (i.id, i.parent)).collect::<Vec<_>>();
+        let structure_same = shape(&incoming) == shape(&seen);
+
+        let mut out: Vec<Item> = Vec::with_capacity(incoming.len());
+        for inc in &incoming {
+            let touched = seen_by_id.get(&inc.id).is_none_or(|s| !inc.same_content(s));
+            match stored_by_id.get(&inc.id) {
+                Some(st) if touched => out.push(Item { rank: st.rank.clone(), ..inc.clone() }),
+                Some(st) => out.push((*st).clone()),
+                // New row, or one edited after it was removed behind the sidebar's back.
+                None if touched => out.push(Item { rank: String::new(), ..inc.clone() }),
+                // Untouched and gone from the store (archived, deleted elsewhere): stays gone.
+                None => {}
+            }
+        }
+        // Rows that arrived since the sidebar last looked.
+        let unseen: Vec<Item> = items.iter().filter(|i| !seen_by_id.contains_key(&i.id) && !incoming_ids.contains(&i.id)).cloned().collect();
+
+        let merged = if structure_same {
+            // Nothing structural from the user, so the store's order stands
+            // (it may hold a reorder from another device).
+            let mut by_id: HashMap<u64, Item> = out.into_iter().map(|i| (i.id, i)).collect();
+            let mut v: Vec<Item> = Vec::with_capacity(items.len());
+            for st in items.iter() {
+                if let Some(i) = by_id.remove(&st.id) {
+                    v.push(i);
+                } else if !seen_by_id.contains_key(&st.id) {
+                    v.push(st.clone());
+                }
+            }
+            let mut rest: Vec<Item> = incoming.iter().filter_map(|i| by_id.remove(&i.id)).collect();
+            v.append(&mut rest);
+            v
+        } else {
+            // The user's order wins; unseen rows slot in by rank among their siblings.
+            let mut v = out;
+            for u in unseen {
+                let at = v.iter().position(|i| i.parent == u.parent && !i.rank.is_empty() && i.rank > u.rank).unwrap_or(v.len());
+                v.insert(at, u);
+            }
+            v
+        };
+        *items = merged;
+        normalize(&mut items);
+        *seen = incoming;
     }
 
     /// Remember the events of one day. Returns whether anything changed (the
@@ -186,7 +293,16 @@ impl Store {
         if let Ok(json) = serde_json::to_string(&*map) {
             write_atomic(&self.dir.join("day_events.json"), &json);
         }
+        self.version.fetch_add(1, Ordering::Relaxed);
         true
+    }
+
+    /// Write the recorded days as they are now (after a pull changed them).
+    pub fn save_day_events(&self) {
+        let map = self.day_events.lock().unwrap();
+        if let Ok(json) = serde_json::to_string(&*map) {
+            write_atomic(&self.dir.join("day_events.json"), &json);
+        }
     }
 
     pub fn save_archive(&self) {
@@ -194,6 +310,7 @@ impl Store {
         if let Ok(json) = serde_json::to_string_pretty(&*archive) {
             write_atomic(&self.dir.join("archive.json"), &json);
         }
+        self.version.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Move the given items, plus everything nested under them at any depth,
@@ -238,12 +355,15 @@ impl Store {
     }
 
     pub fn save_items(&self) {
-        let items = self.items.lock().unwrap();
+        let mut items = self.items.lock().unwrap();
+        // The list order is the truth locally; make the ranks say the same.
+        crate::rank::repair(&mut items);
         if let Ok(json) = serde_json::to_string_pretty(&*items) {
             let path = self.dir.join("tasks.json");
             backup_daily(&path, &self.dir.join("backups"));
             write_atomic(&path, &json);
         }
+        self.version.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn save_settings(&self) {
@@ -370,7 +490,103 @@ mod tests {
     use super::{backup_daily, load_json, normalize, parse_marker, strip_inline, write_atomic, Item, Store};
 
     fn item(id: u64, parent: Option<u64>) -> Item {
-        Item { id, text: format!("item {id}"), kind: "note".into(), done: false, parent, created_at: 0, done_at: None, schedule: None }
+        Item { id, text: format!("item {id}"), kind: "note".into(), done: false, parent, created_at: 0, done_at: None, schedule: None, rank: String::new() }
+    }
+
+    fn edited(id: u64, parent: Option<u64>, text: &str) -> Item {
+        Item { text: text.into(), ..item(id, parent) }
+    }
+
+    fn texts(store: &Store) -> Vec<(u64, String)> {
+        store.items.lock().unwrap().iter().map(|i| (i.id, i.text.clone())).collect()
+    }
+
+    #[test]
+    fn a_stale_save_from_the_sidebar_does_not_undo_changes_made_behind_it() {
+        let dir = std::env::temp_dir().join(format!("deskpad-merge-{}", std::process::id()));
+        let store = Store::load(dir.clone());
+        *store.items.lock().unwrap() = vec![item(1, None), item(2, None), item(3, None)];
+        store.save_items();
+        let loaded = store.list_for_frontend();
+
+        // Behind the sidebar's back: row 2 is edited, row 3 removed, row 4 added (a pull, say).
+        {
+            let mut items = store.items.lock().unwrap();
+            items[1].text = "two, edited elsewhere".into();
+            items.retain(|i| i.id != 3);
+            items.push(item(4, None));
+        }
+        store.save_items();
+
+        // The sidebar, still holding the old list, saves an edit to row 1 only.
+        let mut sent = loaded.clone();
+        sent[0].text = "one, edited here".into();
+        store.set_from_frontend(sent.clone());
+        store.save_items();
+        assert_eq!(
+            texts(&store),
+            vec![(1, "one, edited here".into()), (2, "two, edited elsewhere".into()), (4, "item 4".into())],
+            "the local edit lands; the remote edit, removal and addition all survive"
+        );
+
+        // A second stale save that also touches the removed row brings that row back.
+        sent[2].text = "three, edited here after all".into();
+        store.set_from_frontend(sent);
+        assert!(texts(&store).contains(&(3, "three, edited here after all".into())));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Safety check before shipping a change to the save path: point
+    /// `DESKPAD_DATA_COPY` at a COPY of a real data folder. Loading, handing
+    /// the list to the sidebar and saving it straight back must change
+    /// nothing except filling in ranks, and those must follow the order.
+    #[test]
+    #[ignore]
+    fn a_real_store_round_trips_unchanged() {
+        let dir = std::path::PathBuf::from(std::env::var("DESKPAD_DATA_COPY").expect("DESKPAD_DATA_COPY"));
+        let before: Vec<Item> = load_json(&dir.join("tasks.json")).expect("tasks.json");
+        let store = Store::load(dir.clone());
+        let sent: Vec<Item> = store.list_for_frontend().into_iter().map(|i| Item { rank: String::new(), ..i }).collect();
+        store.set_from_frontend(sent);
+        store.save_items();
+        let after: Vec<Item> = load_json(&dir.join("tasks.json")).expect("tasks.json after");
+        assert_eq!(before.len(), after.len());
+        let mut normalized = before.clone();
+        normalize(&mut normalized);
+        for (b, a) in normalized.iter().zip(&after) {
+            assert!(b.same_content(a), "row {} changed", b.id);
+            assert!(!a.rank.is_empty());
+        }
+        let mut last: std::collections::HashMap<Option<u64>, String> = Default::default();
+        for a in &after {
+            if let Some(prev) = last.insert(a.parent, a.rank.clone()) {
+                assert!(prev < a.rank, "ranks follow the order");
+            }
+        }
+        println!("{} rows round-tripped; archive {} rows", after.len(), store.archive.lock().unwrap().len());
+    }
+
+    #[test]
+    fn the_sidebar_can_still_delete_move_and_add() {
+        let dir = std::env::temp_dir().join(format!("deskpad-merge2-{}", std::process::id()));
+        let store = Store::load(dir.clone());
+        *store.items.lock().unwrap() = vec![item(1, None), item(2, None), item(3, None)];
+        store.save_items();
+        let ranks: Vec<String> = store.items.lock().unwrap().iter().map(|i| i.rank.clone()).collect();
+        let loaded = store.list_for_frontend();
+
+        // Delete 2, move 3 to the front, add 9 under 1. The sidebar's copies carry no useful rank.
+        let sent = vec![Item { rank: String::new(), ..loaded[2].clone() }, loaded[0].clone(), edited(9, Some(1), "new child")];
+        store.set_from_frontend(sent);
+        store.save_items();
+        let got: Vec<(u64, Option<u64>)> = store.items.lock().unwrap().iter().map(|i| (i.id, i.parent)).collect();
+        assert_eq!(got, vec![(3, None), (1, None), (9, Some(1))]);
+        let items = store.items.lock().unwrap();
+        assert!(items[0].rank < items[1].rank, "ranks follow the new order");
+        assert_eq!(items[1].rank, ranks[0], "the row that stayed keeps its rank");
+        assert!(!items[2].rank.is_empty());
+        drop(items);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
