@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --port 8787",
-    "deploy": "wrangler deploy --env=\"\"",
+    "deploy": "npm --prefix .. run build:web && wrangler deploy --env=\"\"",
     "types": "wrangler types",
     "check": "tsc --noEmit",
     "test": "node test/e2e.mjs",
-    "test:desktop": "node test/desktop-e2e.mjs"
+    "test:desktop": "node test/desktop-e2e.mjs",
+    "pretest": "npm --prefix .. run build:web",
+    "predev": "npm --prefix .. run build:web"
   },
   "devDependencies": {
     "typescript": "~6.0.3",

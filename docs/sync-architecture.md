@@ -1,9 +1,10 @@
 # Deskpad cloud: sync, backup and multi-tenancy
 
-Status: step 1 of §11 is built and tested locally (see "What is built" at the
-end); it is not deployed yet, and auth is still hand-issued device tokens.
-The rest is design. This document describes the infrastructure Deskpad syncs
-through so that a later public sign-up
+Status: steps 1 to 4 of §11 are built and deployed (see "What is built" at the
+end): the sync Worker, Better Auth sign-in with the device flow, and the
+mobile web app. Sign-up is still closed to the first account. This document
+describes the infrastructure Deskpad syncs through
+so that a later public sign-up
 ("Deskpad is a note and calendar app for Windows and mobile") can be added
 without reworking storage, and so that one tenant's data can never be read or
 written by another.
@@ -376,46 +377,72 @@ only A's rows and images, including after deleting B.
    passkey plugins and the website. No change below the Worker's auth
    middleware.
 
-## 12. What is built (step 1) and where it differs from the text above
+## 12. What is built and where it differs from the text above
 
-Built: `cloud/` (Worker, `TenantDO`, R2 images, `/sync`, `/export`, `/status`),
-`shared/protocol.ts`, and on the desktop `rank.rs`, `sync.rs`, the Cloud sync
-section in Settings, and `Store::set_from_frontend`. Images are included
-(step 2's first half). `npm test` and `npm run test:desktop` in `cloud/` cover
-the merge rules, cross-tenant isolation, and the real desktop engine against a
-local Worker.
+Built and deployed: `cloud/` (Worker, `TenantDO`, R2 images, `/sync`,
+`/export`, `/status`, Better Auth in `src/auth.ts`, the `/device` sign-in and
+approval page), `shared/protocol.ts`, on the desktop `rank.rs`, `sync.rs`,
+the device sign-in flow and the Cloud sync section in Settings, and `web/`,
+the mobile web app served by the same Worker. `npm test` and
+`npm run test:desktop` in `cloud/` and `npm run test:web` at the root cover
+the merge rules, accounts and the device flow, cross-tenant isolation, and the
+real desktop engine against a local Worker.
 
-Deliberate differences from the design, all smaller than what was sketched:
+Deliberate differences from the design:
 
 - **Row ids stay numeric** (§5.1). The existing scheme, clock in microseconds
   with a random last three digits, already makes a cross-device collision a
   same-millisecond one-in-a-thousand event, and it stays below 2^53. Ids are
   decimal strings on the wire and in the Durable Object, so a later client may
-  use other ids; the desktop skips rows whose id it cannot hold.
-- **No `updated_at` on `Item`** (§5.5). The desktop does not hook every write.
-  `sync_state.json` keeps, per row, the copy last agreed with the server, and
-  a cycle diffs the store against it. That covers every way a row can change
-  and keeps `tasks.json` free of sync bookkeeping. Changes are stamped when
-  the diff first notices them (within seconds while the app runs) and keep
-  that stamp until acknowledged.
+  use other ids; the apps skip rows whose id they cannot hold.
+- **No `updated_at` on `Item`** (§5.5). Neither client hooks every write. Each
+  keeps, per row, the copy last agreed with the server (`sync_state.json`;
+  IndexedDB on the web) and a cycle diffs the store against it. Changes are
+  stamped when the diff first notices them and keep that stamp until
+  acknowledged.
 - **Plain last-writer-wins per row** (§5.3); the "a completion survives" rule
   is not implemented.
 - **Tombstones keep the row's content** on the server (§5.3 said cleared), so
   a deletion made by mistake is recoverable from an export. Tombstone GC is
   not built.
-- **The stale-list problem** was not in the design: the sidebar saves the
+- **The stale-list problem** was not in the design: the outline saves the
   whole list, so a save racing a pull would delete or revert what the pull
-  just brought. `set_from_frontend` merges three ways against what the
-  sidebar last loaded.
+  just brought. `set_from_frontend` (Rust) and `mergeFrontend` (web) merge
+  three ways against what the outline last loaded.
 - **A mass-deletion guard**: when more than half of the synced rows (and more
   than 20) are gone locally, the cycle stops and asks, instead of deleting
-  them remotely. This is what protects the cloud copy from a lost or reset
-  `tasks.json`.
+  them remotely.
 - **No WebSocket yet** (§5.4): the desktop pushes two seconds after edits
-  settle and pulls every minute.
-- **Auth is `DEVICE_TOKENS`**, a Worker secret mapping token hashes to
-  `{ tenant, device }` (`cloud/scripts/issue-token.mjs`). `authenticate` in
-  `cloud/src/index.ts` is the one function Better Auth replaces (§6).
+  settle and pulls every minute; the web app pushes after 1.5 s and pulls
+  every 30 s while visible.
+- **Tenants are our own tables, not the organization plugin** (§4.1, §6).
+  `tenant` and `membership` in D1 carry the same model (user, tenant,
+  membership kept apart; one default tenant per user, created on first use)
+  with a few lines of SQL instead of a plugin's hooks. Moving to the plugin
+  later is a table copy. The tenant id is random (`t_` + 24 hex).
+- **Email and password first** (§6 said Google first). It needs no outside
+  setup; Google appears on the sign-in pages once `GOOGLE_CLIENT_ID` and
+  `GOOGLE_CLIENT_SECRET` are set (a *web* OAuth client with redirect
+  `<origin>/api/auth/callback/google`; the desktop's Calendar client is a
+  different, loopback-only one).
+- **Sign-up gate**: the `SIGNUP` var is `first` (only while no account
+  exists), `open` or `closed`, enforced in a `user.create` hook, instead of
+  an email allowlist.
+- **The device is the session** (§6): `updated_by` is the Better Auth session
+  id, so signing in again makes a new device and a fresh agreement (pull,
+  then push what differs).
+- **`DEVICE_TOKENS`** (hand-issued tokens) survives only as an optional path
+  for tests and automation; production should not set it.
+- **The web app shares the outline, not a `Backend` interface** (§5.5). The
+  web build aliases the three Tauri imports to shims (`web/src/shim`), so
+  `src/outline.ts`, `text.ts`, `paste.ts`, `schedule.ts` and `images.ts` run
+  unchanged; `web/src/store.ts` answers the commands and `web/src/core.ts`
+  is the TypeScript twin of the Rust merge code.
+- **The web app is notes and tasks only**: no calendar, journal, or day
+  events (§9). A time typed there stays on the row and syncs; the desktop
+  owns Google Calendar. Pictures need a connection to add; they are cached
+  for offline viewing.
 
-Not built: deployment, nightly exports and GC (§7), quotas beyond a row cap
-(§8), the control-plane database, Better Auth, the PWA.
+Not built: nightly exports and GC (§7), quotas beyond a row cap (§8),
+passkeys and email verification, password reset (needs an email provider),
+live push, a sign-up page for the public.

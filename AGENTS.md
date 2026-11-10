@@ -27,8 +27,10 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |
 | `index.html`, `capture.html`, `tab.html`, `alert.html` | One page per window (Vite multi-page) |
-| `src/cloud.ts` | Settings → Cloud sync: connect a PC, status, "sync now" |
-| `cloud/` | The sync Worker: `src/index.ts` (auth, routes), `src/tenant-do.ts` (one Durable Object per tenant), tests, `scripts/issue-token.mjs` |
+| `src/cloud.ts` | Settings → Cloud sync: sign in (device flow), status, "sync now" |
+| `cloud/` | The Worker: `src/index.ts` (routes, who is calling), `src/auth.ts` (Better Auth on D1, tenants), `src/tenant-do.ts` (one Durable Object per tenant), tests. `public/` is build output |
+| `web/` | The mobile web app: `index.html`, `src/main.ts` (page, sign-in, toolbar), `src/store.ts` (IndexedDB + sync), `src/core.ts` (pure merge code, twin of the Rust), `src/shim/` (stand-ins for the Tauri imports), `public/` (sign-in page `device.html`, service worker, manifest) |
+| `vite.web.config.ts` | Builds `web/` into `cloud/public` with the Tauri imports aliased to the shims |
 | `shared/protocol.ts` | Wire types shared by the Worker and (later) the web app; `sync.rs` mirrors them |
 | `docs/sync-architecture.md` | Design for cloud sync, backup and multi-tenancy on Cloudflare; §12 says what is built |
 
@@ -44,7 +46,7 @@ also be listed in `src-tauri/capabilities/default.json`.
   side on change. **Only one Deskpad can run at a time**: a second instance
   fights the first for the right edge and the Ctrl+Space shortcut. Quit the
   installed app from its tray icon before running dev, and vice versa.
-- Checks: `cargo test` in `src-tauri` (marker parsing, store safety, archive, ranks, sync merge), `npx tsc --noEmit -p .` and `npx vite build` at the root. In `cloud/`: `npx tsc --noEmit`, `npm test` (Worker against `wrangler dev`) and `npm run test:desktop` (the Rust engine against `wrangler dev`). Both start and stop their own server on ports 8799/8798; if a run is killed midway, stop leftover `workerd.exe` processes before the next one or it will talk to the old server.
+- Checks: `cargo test` in `src-tauri` (marker parsing, store safety, archive, ranks, sync merge), `npx tsc --noEmit -p .` and `npx vite build` at the root. `npm run test:web` (the web app's merge code in Node) and `npm run build:web`. In `cloud/`: `npx tsc --noEmit`, `npm test` (Worker against `wrangler dev`: sync, accounts, device flow, isolation) and `npm run test:desktop` (the Rust engine against `wrangler dev`). `npm run deploy` there builds the web app and deploys. Both start and stop their own server on ports 8799/8798; if a run is killed midway, stop leftover `workerd.exe` processes before the next one or it will talk to the old server.
 - UI changes can be exercised without the native app by opening
   `http://localhost:1420/` in a browser and installing a mock
   `window.__TAURI_INTERNALS__` whose `invoke` implements the commands the page
@@ -93,8 +95,8 @@ you ever need to inspect the real folders from a sandboxed shell, a UNC path
 
 User data lives in `%APPDATA%\com.jgentes.deskpad\` (`tasks.json`,
 `archive.json`, `day_events.json`, `settings.json`, `google_tokens.json`,
-`backups\`, `images\`, and for sync `cloud.json` (server address and device
-token; a secret, never echo or commit it) and `sync_state.json`). The
+`backups\`, `images\`, and for sync `cloud.json` (server address and this
+PC's session token; a secret, never echo or commit it) and `sync_state.json`). The
 installed app and the dev build share it.
 
 1. **Register state before windows exist.** `Store` and `Google` are loaded in
@@ -251,11 +253,27 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   `plan_rows`/`apply_rows`/`plan_days`/`apply_days` are pure and tested with
   two simulated devices; keep them pure. The loop (`run`) pushes two seconds
   after `Store.version` stops moving and pulls every minute; it idles until
-  `cloud.json` is set. `Item.rank` orders siblings across devices: the list
+  the PC is signed in. Signing in is the device flow (`begin_sign_in`,
+  `finish_sign_in`, command `cloud_sign_in`): the app opens `/device` in the
+  browser, shows the code to compare, and receives a Better Auth session
+  token; nothing is typed into the app. A 401 drops the dead token so
+  Settings offers Sign in again. `Item.rank` orders siblings across devices: the list
   order is the truth locally (`rank::repair` in `save_items` re-ranks only
   moved or new rows), and after a pull siblings are sorted by rank. The
   frontend never sets `rank`. New row ids on both sides are the clock in
   microseconds with a random last three digits (`new_id`, `newItem`).
+- The web app (`web/`) reuses the outline by aliasing, not by a fork: keep
+  `src/outline.ts`, `text.ts`, `paste.ts`, `schedule.ts`, `images.ts` free of
+  anything but the three Tauri imports the shims cover (`invoke`,
+  `convertFileSrc`, `listen`, `openUrl`) and the element ids `#outline`,
+  `#task-count`, `#btn-clear-done`. A new backend command the outline calls
+  needs a case in `web/src/shim/core.ts`. `web/src/core.ts` must change with
+  `rank.rs`, `set_from_frontend` and `plan_rows`/`apply_rows`; the two rank
+  implementations must keep producing the same strings.
+- Settings save themselves: every control in the dialog writes the whole form
+  on `change` (`saveSettings` in `main.ts`, serialized through `saveChain`).
+  There is no Save or Cancel; add new controls inside `#settings-form` and
+  they are picked up.
 - Days are the record, the outline is the workspace. A row's day is derived
   from `created_at` (local), `done_at` is set/cleared by the frontend when a
   task is toggled, and `schedule.start` places it on a day. The journal

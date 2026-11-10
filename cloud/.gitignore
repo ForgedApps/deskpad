@@ -3,3 +3,4 @@ node_modules
 .dev.vars
 .device-token*.txt
 .admin-key.txt
+public
