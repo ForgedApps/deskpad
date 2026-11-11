@@ -221,6 +221,16 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   unix seconds, and `main.ts` always keeps today + tomorrow loaded (`meetings`,
   which drives alerts) plus the browsed day (`dayMeetings`) when it is another
   one. `tomorrow_until_hour` replaced the old rolling look-ahead.
+- Rows move by dragging their bullet or checkbox (`watchDrag` and friends in
+  `outline.ts`, pointer events, mouse and pen only). The pointer's height picks
+  a gap between the visible rows that are not part of the dragged block, and its
+  x position picks the nesting level there (`computeDrop`: from the next row's
+  depth up to the previous row's depth plus one). `moveBlock` splices the row
+  and its descendants out and back in as `(parent, after)`, so nothing but
+  `items` changes and saving, ranks and syncing need no special case. A click
+  that ends a drag is swallowed (`justDragged`), a drag that would land where
+  the row already is draws no line and does nothing, and a drop into a folded
+  row opens it. Touch is not handled: a finger scrolls the list.
 - Fold state (which parents are collapsed) is a view preference kept in
   `localStorage` (`deskpad.collapsed`), never in `tasks.json`.
 - Rows nest to any depth through `parent`, and `tasks.json` is kept in

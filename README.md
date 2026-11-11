@@ -46,6 +46,10 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
 - **On your phone**: the same server hosts a web app with your notes and
   tasks (nesting, pictures, offline). Open its address in the phone's
   browser, sign in, and add it to the home screen.
+- **Moving rows**: drag a bullet (or a task's checkbox) to move the row, with
+  everything nested under it, up or down the list or into another row. A line
+  shows where it will land; the pointer's horizontal position picks the nesting
+  level. Escape cancels.
 - **Journal**: the outline is your workspace, the journal is the record. Open
   it from the Notes header ("journal") for a resizable window with a timeline
   of days down the left and one day in the middle: that day's calendar events

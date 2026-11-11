@@ -18,7 +18,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { fmtSchedule, fmtScheduleLong, parseMarker, parseSchedule, type Parsed } from "./schedule";
-import { renderInline } from "./text";
+import { renderInline, stripInline } from "./text";
 import { parseClipboard, type PastedLine } from "./paste";
 import { clipboardImage, saveImage } from "./images";
 
@@ -509,7 +509,9 @@ function renderRow(it: Item, depth: number): HTMLElement {
   const kidCount = descendants(it.id).size;
   if (kidCount && it.kind === "note") mark.title = collapsed.has(it.id) ? `Expand ${kidCount} nested` : "Collapse";
   mark.addEventListener("mousedown", (e) => e.preventDefault());
+  mark.addEventListener("pointerdown", (e) => watchDrag(e, it.id));
   mark.addEventListener("click", () => {
+    if (justDragged) return;
     // A note bullet with children is a disclosure, like Workflowy. Task
     // checkboxes keep toggling done; their fold lives on the chevron.
     if (it.kind === "note" && kidCount) {
@@ -841,6 +843,219 @@ function focusRow(id: number) {
 
 export function clearCompleted() {
   return archive(items.filter((i) => i.kind === "task" && i.done).map((i) => i.id));
+}
+
+// ---------- drag and drop ----------
+// Grab a row by its bullet or checkbox and drop it somewhere else: up or down
+// the list, or into another row's hierarchy. The row takes everything nested
+// under it along. A line shows where it will land; the pointer's height picks
+// the gap between two rows and its horizontal position picks the nesting level
+// there (right of a row nests under it, left of it moves out a level), like
+// Workflowy. Moving only rearranges `items`, so saving and syncing need
+// nothing new: the backend re-ranks moved rows from the list order.
+// Mouse and pen only; on touch the finger scrolls.
+
+const DRAG_THRESHOLD = 5;
+/** Matches `.row { margin-left: calc(var(--depth) * 22px) }` in styles.css. */
+const INDENT_PX = 22;
+
+interface DropTarget {
+  /** The new parent, or null for the top level. */
+  parent: number | null;
+  /** The sibling it goes right after, or null to be the first child. */
+  after: number | null;
+  depth: number;
+  /** Where to draw the line, in the outline's scrolled coordinates. */
+  top: number;
+  left: number;
+  /** The row would not move. */
+  noop: boolean;
+}
+
+interface DragState {
+  id: number;
+  block: Set<number>;
+  ghost: HTMLElement;
+  line: HTMLElement;
+  x: number;
+  y: number;
+  drop: DropTarget | null;
+  timer: number;
+}
+
+let dragging = false;
+/** Set for the click that follows a drag, so letting go over the bullet doesn't toggle it. */
+let justDragged = false;
+
+function watchDrag(e: PointerEvent, id: number) {
+  if (e.button !== 0 || e.pointerType === "touch" || dragging) return;
+  const startX = e.clientX;
+  const startY = e.clientY;
+  let st: DragState | null = null;
+
+  const stop = (commit: boolean) => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onCancel);
+    window.removeEventListener("keydown", onKey, true);
+    if (!st) return;
+    endDrag(st, commit);
+    justDragged = true;
+    window.setTimeout(() => (justDragged = false), 0);
+  };
+  const onMove = (ev: PointerEvent) => {
+    if (!st) {
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
+      st = beginDrag(id);
+      if (!st) return stop(false);
+    }
+    st.x = ev.clientX;
+    st.y = ev.clientY;
+    updateDrag(st);
+  };
+  const onUp = () => stop(true);
+  const onCancel = () => stop(false);
+  const onKey = (ev: KeyboardEvent) => {
+    if (ev.key === "Escape") {
+      ev.stopPropagation();
+      stop(false);
+    }
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onCancel);
+  window.addEventListener("keydown", onKey, true);
+}
+
+function beginDrag(id: number): DragState | null {
+  const it = byId(id);
+  const out = $("#outline");
+  if (!it) return null;
+  const block = descendants(id);
+  block.add(id);
+
+  const ghost = document.createElement("div");
+  ghost.className = "drag-ghost";
+  const label = stripInline(it.text).replace(/\s+/g, " ").trim() || (it.kind === "task" ? "task" : "note");
+  ghost.textContent = block.size > 1 ? `${label}  +${block.size - 1}` : label;
+  document.body.append(ghost);
+
+  const line = document.createElement("div");
+  line.className = "drop-line";
+  line.hidden = true;
+  out.append(line);
+
+  document.body.classList.add("dragging-rows");
+  out.querySelectorAll<HTMLElement>(".row[data-id]").forEach((r) => {
+    if (block.has(Number(r.dataset.id))) r.classList.add("being-dragged");
+  });
+  dragging = true;
+
+  const st: DragState = { id, block, ghost, line, x: 0, y: 0, drop: null, timer: 0 };
+  // Keep scrolling while the pointer rests near an edge.
+  st.timer = window.setInterval(() => {
+    if (scrollForDrag(st)) updateDrag(st, false);
+  }, 30);
+  return st;
+}
+
+/** Scroll the outline when the pointer is near its top or bottom edge. */
+function scrollForDrag(st: DragState): boolean {
+  const out = $("#outline");
+  const r = out.getBoundingClientRect();
+  const edge = 40;
+  let dy = 0;
+  if (st.y < r.top + edge) dy = -Math.ceil((r.top + edge - st.y) / 4);
+  else if (st.y > r.bottom - edge) dy = Math.ceil((st.y - (r.bottom - edge)) / 4);
+  if (!dy) return false;
+  const before = out.scrollTop;
+  out.scrollTop += Math.max(-24, Math.min(24, dy));
+  return out.scrollTop !== before;
+}
+
+function updateDrag(st: DragState, scroll = true) {
+  if (scroll) scrollForDrag(st);
+  st.ghost.style.transform = `translate(${st.x + 14}px, ${st.y + 10}px)`;
+  const out = $("#outline");
+  if (!st.line.isConnected) out.append(st.line);
+  st.drop = computeDrop(st);
+  const d = st.drop;
+  st.line.hidden = !d || d.noop;
+  if (d && !d.noop) {
+    st.line.style.top = `${d.top}px`;
+    st.line.style.left = `${d.left}px`;
+    st.line.style.width = `${Math.max(24, out.clientWidth - d.left - 8)}px`;
+  }
+}
+
+/** Where the pointer would drop the row: the gap it is nearest, at the level its x position picks. */
+function computeDrop(st: DragState): DropTarget | null {
+  const it = byId(st.id);
+  if (!it) return null;
+  const out = $("#outline");
+  const rows = [...out.querySelectorAll<HTMLElement>(".row[data-id]")].filter((r) => !st.block.has(Number(r.dataset.id)));
+  const rects = rows.map((r) => r.getBoundingClientRect());
+  // The gap sits after every row whose middle is above the pointer.
+  let g = 0;
+  while (g < rows.length && (rects[g].top + rects[g].bottom) / 2 < st.y) g++;
+  const prev = g > 0 ? byId(Number(rows[g - 1].dataset.id)) : undefined;
+  const next = g < rows.length ? byId(Number(rows[g].dataset.id)) : undefined;
+
+  const padL = parseFloat(getComputedStyle(out).paddingLeft) || 0;
+  const minDepth = next ? depthOf(next) : 0;
+  const maxDepth = prev ? depthOf(prev) + 1 : 0;
+  const lo = Math.min(minDepth, maxDepth);
+  // Row content starts `padL` in from the outline's edge; the bullet sits a little further.
+  const wanted = Math.round((st.x - (out.getBoundingClientRect().left + out.clientLeft + padL) - 6) / INDENT_PX);
+  const depth = Math.max(lo, Math.min(maxDepth, wanted));
+
+  let parent: number | null = null;
+  let after: number | null = null;
+  if (prev) {
+    if (depth === depthOf(prev) + 1) {
+      parent = prev.id;
+    } else {
+      // The ancestor of `prev` at this depth (or `prev` itself) is the sibling to follow.
+      let sib: Item = prev;
+      for (let n = depthOf(prev) - depth; n > 0 && sib.parent !== null; n--) sib = byId(sib.parent) ?? sib;
+      parent = sib.parent;
+      after = sib.id;
+    }
+  }
+
+  const siblings = items.filter((i) => i.parent === it.parent);
+  const at = siblings.findIndex((i) => i.id === it.id);
+  const currentAfter = at > 0 ? siblings[at - 1].id : null;
+  const noop = parent === it.parent && after === currentAfter;
+
+  const top = prev ? rows[g - 1].offsetTop + rows[g - 1].offsetHeight : rows.length ? rows[0].offsetTop : 0;
+  return { parent, after, depth, top: top - 1, left: padL + depth * INDENT_PX + 2, noop };
+}
+
+function endDrag(st: DragState, commit: boolean) {
+  window.clearInterval(st.timer);
+  st.ghost.remove();
+  st.line.remove();
+  dragging = false;
+  document.body.classList.remove("dragging-rows");
+  document.querySelectorAll(".row.being-dragged").forEach((r) => r.classList.remove("being-dragged"));
+  const d = st.drop;
+  if (commit && d && !d.noop) moveBlock(st.id, d.parent, d.after);
+}
+
+/** Move a row and its descendants under `parent`, right after the sibling `after` (or first). */
+function moveBlock(id: number, parent: number | null, after: number | null) {
+  const it = byId(id);
+  if (!it) return;
+  if (parent !== null && (parent === id || descendants(id).has(parent))) return;
+  const block = spliceBlock(id);
+  it.parent = parent;
+  const at = after !== null ? blockEnd(after) + 1 : parent !== null ? idx(parent) + 1 : 0;
+  items.splice(at, 0, ...block);
+  // A row dropped into a folded parent would vanish; open it.
+  if (parent !== null && collapsed.delete(parent)) saveCollapsed();
+  scheduleSave();
+  render();
 }
 
 // ---------- journal hand-off ----------

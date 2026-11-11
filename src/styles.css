@@ -380,6 +380,52 @@ button.danger:hover {
 .outline {
   gap: 0;
   user-select: text;
+  position: relative;
+}
+/* Moving a row by its bullet: see "drag and drop" in outline.ts. */
+.row.being-dragged {
+  opacity: 0.35;
+}
+.drop-line {
+  position: absolute;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 5;
+}
+.drop-line::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 100;
+  max-width: 260px;
+  padding: 4px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px var(--shadow);
+  pointer-events: none;
+}
+body.dragging-rows,
+body.dragging-rows * {
+  cursor: grabbing !important;
+  user-select: none !important;
 }
 .row {
   display: flex;
