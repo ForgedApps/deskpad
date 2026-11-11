@@ -63,7 +63,18 @@
 
     <section id="signin" class="signin" hidden>
       <h1>Deskpad</h1>
-      <p>Your notes and tasks, in step with your PC. New here? The same button creates your account.</p>
+      <div class="mock" aria-hidden="true">
+        <div class="m-clock">9:41 <small>AM</small></div>
+        <div class="m-date">Tuesday, November 10</div>
+        <div class="m-sec">Today</div>
+        <div class="m-ev now"><b>9:30</b><span>Design review</span><em>now</em></div>
+        <div class="m-ev"><b>11:00</b><span>Standup</span></div>
+        <div class="m-ev"><b>2:30</b><span>1:1 with Sam</span></div>
+        <div class="m-sec">Notes</div>
+        <div class="m-row"><i class="dot"></i><span>Launch checklist</span></div>
+        <div class="m-row child"><i class="box done"></i><span class="struck">Write release notes</span></div>
+        <div class="m-row child"><i class="box"></i><span>Send the invites</span></div>
+      </div>
       <button id="signin-google" class="google" type="button">
         <svg viewBox="0 0 48 48" aria-hidden="true">
           <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
@@ -74,6 +85,7 @@
         Continue with Google
       </button>
       <div class="error" id="signin-error" role="alert"></div>
+      <p class="note">Deskpad syncs with your Google Calendar, so your day sits right beside your notes and tasks.</p>
     </section>
 
     <script type="module" src="/src/main.ts"></script>

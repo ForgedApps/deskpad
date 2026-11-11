@@ -290,3 +290,121 @@ body.web .row .when {
   min-height: 20px;
   font-size: 14px;
 }
+
+/* A static picture of the sidebar on the sign-in screen. */
+.signin .note {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--fg-2);
+}
+.mock {
+  padding: 14px 16px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.35;
+  user-select: none;
+}
+.mock .m-clock {
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.5px;
+}
+.mock .m-clock small {
+  margin-left: 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-2);
+}
+.mock .m-date {
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+.mock .m-sec {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.mock .m-ev {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.mock .m-ev b {
+  width: 40px;
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+.mock .m-ev span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mock .m-ev em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--now);
+}
+.mock .m-ev.now {
+  background: var(--now-bg);
+}
+.mock .m-ev.now b {
+  color: var(--now);
+}
+.mock .m-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 8px;
+}
+.mock .m-row.child {
+  margin-left: 18px;
+}
+.mock .dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin: 0 6px;
+  border-radius: 50%;
+  background: var(--fg-3);
+}
+.mock .box {
+  position: relative;
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid var(--fg-3);
+  border-radius: 50%;
+}
+.mock .box.done {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.mock .box.done::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 3px;
+  height: 7px;
+  border: solid var(--bg);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(40deg);
+}
+.mock .struck {
+  color: var(--fg-3);
+  text-decoration: line-through;
+}

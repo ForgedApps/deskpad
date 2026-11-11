@@ -38,6 +38,25 @@
       button.google svg { width: 18px; height: 18px; flex-shrink: 0; }
       button[disabled] { opacity: 0.6; cursor: wait; }
       .row { display: flex; gap: 10px; }
+      /* A static picture of the sidebar, so the page shows what you are signing in to. */
+      .mock { margin: 0 0 16px; padding: 14px 16px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; font-size: 13px; line-height: 1.35; user-select: none; }
+      .mock .m-clock { font-size: 26px; font-weight: 650; letter-spacing: -0.5px; }
+      .mock .m-clock small { font-size: 13px; font-weight: 600; color: var(--fg-2); margin-left: 2px; }
+      .mock .m-date { color: var(--fg-2); font-size: 12px; margin-bottom: 8px; }
+      .mock .m-sec { margin: 10px 0 4px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-2); }
+      .mock .m-ev { display: flex; align-items: baseline; gap: 10px; padding: 4px 8px; border-radius: 6px; }
+      .mock .m-ev b { width: 38px; flex-shrink: 0; font-weight: 600; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+      .mock .m-ev span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .mock .m-ev em { font-style: normal; font-size: 10.5px; font-weight: 700; color: var(--ok); }
+      .mock .m-ev.now { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+      .mock .m-ev.now b { color: var(--ok); }
+      .mock .m-row { display: flex; align-items: center; gap: 10px; padding: 3px 8px; }
+      .mock .m-row.child { margin-left: 18px; }
+      .mock .dot { width: 6px; height: 6px; margin: 0 6px; border-radius: 50%; background: var(--fg-2); flex-shrink: 0; }
+      .mock .box { width: 14px; height: 14px; border: 1.5px solid var(--fg-2); border-radius: 50%; flex-shrink: 0; position: relative; }
+      .mock .box.done { background: var(--accent); border-color: var(--accent); }
+      .mock .box.done::after { content: ""; position: absolute; left: 3.5px; top: 1px; width: 3px; height: 6px; border: solid var(--accent-fg); border-width: 0 1.5px 1.5px 0; transform: rotate(40deg); }
+      .mock .struck { color: var(--fg-2); text-decoration: line-through; }
       .code { font: 600 22px/1 "Cascadia Code", Consolas, monospace; letter-spacing: 2px; text-align: center; padding: 14px; background: var(--field); border-radius: 8px; margin-bottom: 16px; }
       .error { color: var(--danger); font-size: 13px; min-height: 20px; margin-top: 10px; }
       .foot { margin: 16px 0 0; font-size: 13px; }
@@ -52,7 +71,18 @@
       <section id="v-loading"><p>One moment…</p></section>
 
       <section id="v-auth" hidden>
-        <p id="auth-lead">Sign in to continue. New here? The same button creates your account.</p>
+        <div class="mock" aria-hidden="true">
+          <div class="m-clock">9:41 <small>AM</small></div>
+          <div class="m-date">Tuesday, November 10</div>
+          <div class="m-sec">Today</div>
+          <div class="m-ev now"><b>9:30</b><span>Design review</span><em>now</em></div>
+          <div class="m-ev"><b>11:00</b><span>Standup</span></div>
+          <div class="m-ev"><b>2:30</b><span>1:1 with Sam</span></div>
+          <div class="m-sec">Notes</div>
+          <div class="m-row"><i class="dot"></i><span>Launch checklist</span></div>
+          <div class="m-row child"><i class="box done"></i><span class="struck">Write release notes</span></div>
+          <div class="m-row child"><i class="box"></i><span>Send the invites</span></div>
+        </div>
         <button id="btn-google" class="google" type="button">
           <svg viewBox="0 0 48 48" aria-hidden="true">
             <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
@@ -63,7 +93,7 @@
           Continue with Google
         </button>
         <div class="error" id="auth-error" role="alert"></div>
-        <p class="foot">Deskpad asks Google for your calendar too, so your day shows up without a second sign-in.</p>
+        <p class="foot">Deskpad syncs with your Google Calendar, so your day sits right beside your notes and tasks.</p>
       </section>
 
       <section id="v-approve" hidden>
