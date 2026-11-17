@@ -119,14 +119,19 @@ body.sidebar {
 .weather .w-rain {
   color: var(--fg-3);
 }
+.weather .w-kind,
 .weather .w-rain {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
+}
+.weather .w-rain {
   gap: 2px;
 }
 .weather .w-rain svg {
   width: 12px;
   height: 12px;
+  stroke: var(--accent);
 }
 .bar {
   align-items: flex-start;

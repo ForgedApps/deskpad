@@ -220,7 +220,8 @@ function render(w: Weather | null, note = "") {
       ? `<span class="w-rain"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5c3 3.6 5.5 6.6 5.5 10a5.5 5.5 0 0 1-11 0c0-3.4 2.5-6.4 5.5-10z" /></svg>${Math.round(w.rain)}%</span>`
       : "";
   el.hidden = false;
-  el.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${d.icon}</svg><b>${w.temp}°</b><span>${d.text}</span><span class="w-range">${w.high}° / ${w.low}°</span>${rain}`;
+  // The icon sits right against its word, so it reads as "cloudy", not as a label for the line.
+  el.innerHTML = `<b>${w.temp}°</b><span class="w-kind"><svg viewBox="0 0 24 24" aria-hidden="true">${d.icon}</svg>${d.text}</span><span class="w-range">${w.high}° / ${w.low}°</span>${rain}`;
   el.title = `${w.place}: ${d.text}, ${w.temp}°. High ${w.high}°, low ${w.low}°${w.rain !== null ? `, ${w.rain}% chance of rain` : ""}.`;
 }
 
