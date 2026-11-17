@@ -5,6 +5,7 @@ import { renderCloud, wireCloud } from "./cloud";
 import { initImages } from "./images";
 import { clearCompleted, focusItem, loadItems } from "./outline";
 import { dayKey } from "./text";
+import { setWeather, type WeatherUnit } from "./weather";
 
 interface Meeting {
   id: string;
@@ -26,6 +27,9 @@ interface Settings {
   /** Today view also lists tomorrow's events starting before this hour (0 = off, 24 = all). */
   tomorrow_until_hour: number;
   show_all_day: boolean;
+  /** City for the weather line under the clock; empty for none. */
+  weather_city: string;
+  weather_unit: WeatherUnit;
 }
 
 interface MeetingsResult {
@@ -382,6 +386,8 @@ function openSettings() {
   $<HTMLSelectElement>("#s-tomorrow").value = String(settings.tomorrow_until_hour);
   $<HTMLInputElement>("#s-width").value = String(settings.width);
   $<HTMLInputElement>("#s-allday").checked = settings.show_all_day;
+  $<HTMLInputElement>("#s-weather-city").value = settings.weather_city ?? "";
+  $<HTMLSelectElement>("#s-weather-unit").value = settings.weather_unit === "c" ? "c" : "f";
   $<HTMLInputElement>("#s-reserve").checked = settings.reserve_space;
   $<HTMLInputElement>("#s-top").checked = settings.always_on_top;
   $<HTMLInputElement>("#s-autostart").checked = settings.autostart;
@@ -406,6 +412,8 @@ function readSettingsForm(): Settings {
     tomorrow_until_hour: Math.min(24, Math.max(0, Number($<HTMLSelectElement>("#s-tomorrow").value) || 0)),
     width: Math.min(600, Math.max(240, Number($<HTMLInputElement>("#s-width").value) || 340)),
     show_all_day: $<HTMLInputElement>("#s-allday").checked,
+    weather_city: $<HTMLInputElement>("#s-weather-city").value.trim(),
+    weather_unit: $<HTMLSelectElement>("#s-weather-unit").value === "c" ? "c" : "f",
     reserve_space: $<HTMLInputElement>("#s-reserve").checked,
     always_on_top: $<HTMLInputElement>("#s-top").checked,
     autostart: $<HTMLInputElement>("#s-autostart").checked,
@@ -430,6 +438,7 @@ function saveSettings() {
     $("#settings-error").textContent = "";
     const calendarChanged = next.tomorrow_until_hour !== settings.tomorrow_until_hour || next.show_all_day !== settings.show_all_day;
     settings = next;
+    setWeather(settings.weather_city, settings.weather_unit);
     const note = $("#settings-saved");
     note.textContent = "Saved";
     window.clearTimeout(savedNoteTimer);
@@ -555,6 +564,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  setWeather(settings.weather_city ?? "", settings.weather_unit === "c" ? "c" : "f");
   // Pictures need the images folder before rows render; the call is local and quick.
   await initImages();
   loadItems().catch((err) => console.error("loadItems failed", err));

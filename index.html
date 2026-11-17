@@ -13,6 +13,7 @@
       <div class="clock">
         <div id="clock-time">--:--</div>
         <div id="clock-date"></div>
+        <div id="clock-weather" class="weather" hidden></div>
       </div>
       <div class="bar-actions">
         <button id="btn-capture" class="icon" title="Quick capture (Ctrl+Space)" aria-label="Quick capture">
@@ -165,6 +166,18 @@
         <label class="check">
           <input id="s-allday" type="checkbox" />
           Show all-day events
+        </label>
+        <label>
+          Weather for
+          <input id="s-weather-city" placeholder="City, e.g. Bend, Oregon" autocomplete="off" spellcheck="false" />
+          <small>Shows today's weather under the clock. Leave empty for none.</small>
+        </label>
+        <label>
+          Temperature
+          <select id="s-weather-unit">
+            <option value="f">Fahrenheit</option>
+            <option value="c">Celsius</option>
+          </select>
         </label>
         <label>
           Sidebar width (px)

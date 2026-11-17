@@ -24,6 +24,7 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src/images.ts` | Pasted images: `save_image` upload, `image_dir` + asset-protocol URLs for `renderInline` |
 | `src/journal.ts`, `journal.html` | Journal window: timeline of days, one day's events/notes/completed/scheduled, search, restore/delete of archived rows |
 | `src/text.ts` | `renderInline` (Markdown subset + links), `stripInline`, `dayKey` and other helpers shared by all windows |
+| `src/weather.ts` | Today's weather under the clock: city lookup, Open-Meteo with MET Norway as fallback, localStorage cache |
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |
 | `index.html`, `capture.html`, `tab.html`, `alert.html` | One page per window (Vite multi-page) |
@@ -216,6 +217,7 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   under "Connect a calendar without an account". `google_status` means "a
   calendar is available either way", `google_direct` means the direct
   connection exists. `can_write()` gates event creation.
+- Weather (`weather.ts`) is frontend-only and keyless: `setWeather(city, unit)` is called at startup and after every settings save, does nothing for an empty city, geocodes the city once (cached), and asks Open-Meteo for current conditions plus the day's high, low and rain chance. If that fails or stalls for 8 s it falls back to MET Norway, which has no rain chance. Both answers are reduced to one `Kind` so the icon and wording don't depend on the provider. Open-Meteo's free tier is for non-commercial use; revisit before a public launch.
 - Alert timing lives in `main.ts` (`ALERT_LEAD` = 120 s, `ALERT_GRACE` = 300 s).
 - Calendar windows are chosen by the frontend: `get_meetings(from, to)` takes
   unix seconds, and `main.ts` always keeps today + tomorrow loaded (`meetings`,

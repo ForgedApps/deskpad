@@ -46,6 +46,7 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
 - **On your phone**: the same server hosts a web app with your notes and
   tasks (nesting, pictures, offline). Open its address in the phone's
   browser, sign in, and add it to the home screen.
+- **Weather**: set a city in Settings and today's weather shows under the clock: current temperature, conditions, the day's high and low, and the chance of rain when it is notable. Leave the city empty for none.
 - **Moving rows**: drag a bullet (or a task's checkbox) to move the row, with
   everything nested under it, up or down the list or into another row. A line
   shows where it will land; the pointer's horizontal position picks the nesting

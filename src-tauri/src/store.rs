@@ -139,6 +139,10 @@ pub struct Settings {
     /// (0 = never show tomorrow, 24 = all of tomorrow).
     pub tomorrow_until_hour: u32,
     pub show_all_day: bool,
+    /// City for the weather line under the clock; empty turns it off.
+    pub weather_city: String,
+    /// "f" or "c".
+    pub weather_unit: String,
 }
 
 impl Default for Settings {
@@ -152,6 +156,8 @@ impl Default for Settings {
             width: 340,
             tomorrow_until_hour: 10,
             show_all_day: true,
+            weather_city: String::new(),
+            weather_unit: "f".into(),
         }
     }
 }
