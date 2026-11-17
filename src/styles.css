@@ -10,6 +10,8 @@
   --accent: #6c9cff;
   --accent-2: #3d64c7;
   --accent-soft: rgba(108, 156, 255, 0.18);
+  /* Text on a filled accent button; the fill is dark blue in both themes. */
+  --on-accent: #ffffff;
   --danger: #ff6b6b;
   --danger-soft: rgba(255, 107, 107, 0.12);
   --now: #4cd27f;
@@ -204,9 +206,11 @@ button.link:hover {
 }
 button.primary {
   background: var(--accent-2);
+  color: var(--on-accent);
 }
 button.primary:hover {
   background: var(--accent);
+  color: var(--on-accent);
 }
 button.danger {
   background: none;
