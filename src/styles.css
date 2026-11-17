@@ -129,9 +129,10 @@ body.sidebar {
   gap: 2px;
 }
 .weather .w-rain svg {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   stroke: var(--accent);
+  fill: var(--accent);
 }
 .bar {
   align-items: flex-start;
