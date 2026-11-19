@@ -6,10 +6,40 @@
 // See docs/sync-architecture.md.
 
 import { IMAGE_MAX_BYTES, IMAGE_NAME, type SyncRequest } from "../../shared/protocol";
-import { callerFromSession, createAuth, googleConfigured, googleToken, migrate, type Caller } from "./auth";
+import { requireMcpAuth } from "@better-auth/mcp";
+import { oauthProviderAuthServerMetadata, oauthProviderOpenIdConfigMetadata } from "@better-auth/oauth-provider";
+import { callerFromSession, createAuth, googleConfigured, googleToken, mcpResource, migrate, NOTES_READ, tenantOfUser, type Caller } from "./auth";
+import { handleMcp } from "./mcp";
 import { TenantDO } from "./tenant-do";
 
 export { TenantDO };
+
+/** Every Better Auth route that is served; see the `/api/auth/` branch below. */
+const AUTH_ROUTES = new Set([
+  "/sign-in/social",
+  "/callback/google",
+  "/get-session",
+  "/sign-out",
+  "/error",
+  // The desktop's sign-in.
+  "/device",
+  "/device/code",
+  "/device/token",
+  "/device/approve",
+  "/device/deny",
+  // OAuth for MCP clients.
+  "/oauth2/authorize",
+  "/oauth2/consent",
+  "/oauth2/token",
+  "/oauth2/register",
+  "/oauth2/revoke",
+  "/oauth2/public-client",
+  "/jwks",
+]);
+/** Password sign-in exists for the automated tests only. */
+const TEST_AUTH_ROUTES = new Set(["/sign-up/email", "/sign-in/email"]);
+/** Largest request body `/sync` reads: two full pages of rows is far below this. */
+const SYNC_MAX_BYTES = 16 * 1024 * 1024;
 
 const TENANT_ID = /^[a-z0-9_-]{3,64}$/;
 const DEVICE_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -82,10 +112,56 @@ export default {
     // What the sign-in pages may offer; nothing secret.
     if (path === "/api/v1/auth-methods") return json({ google: googleConfigured(env) });
 
-    // Better Auth's own endpoints: sign-in, sign-up, sessions, the device flow.
+    // Better Auth's endpoints, but only the ones our pages and apps use. The
+    // library ships many more (linking accounts, listing sessions, and one
+    // that returns the stored Google refresh token to any session); none of
+    // those is reachable.
     if (path.startsWith("/api/auth/")) {
       if (!env.BETTER_AUTH_SECRET) return fail(503, "Sign-in is not configured on this server");
+      const route = path.slice("/api/auth".length);
+      const allowed = AUTH_ROUTES.has(route) || (env.ALLOW_PASSWORD === "1" && TEST_AUTH_ROUTES.has(route));
+      if (!allowed) return fail(404, "Not found");
       return createAuth(env, url.origin).handler(req);
+    }
+
+    // OAuth discovery for MCP clients: who issues tokens, and what /mcp is.
+    // Public by design; none of it is about any account.
+    if (path.startsWith("/.well-known/")) {
+      if (!env.BETTER_AUTH_SECRET) return fail(404, "Not found");
+      if (req.method !== "GET" && req.method !== "HEAD") return fail(405, "Method not allowed");
+      const auth = createAuth(env, url.origin);
+      if (path === "/.well-known/oauth-authorization-server" || path === "/.well-known/oauth-authorization-server/api/auth") {
+        return oauthProviderAuthServerMetadata(auth)(req);
+      }
+      if (path === "/.well-known/openid-configuration" || path === "/.well-known/openid-configuration/api/auth" || path === "/api/auth/.well-known/openid-configuration") {
+        return oauthProviderOpenIdConfigMetadata(auth)(req);
+      }
+      if (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp") return auth.handler(req);
+      return fail(404, "Not found");
+    }
+
+    // The notes for AI clients (mcp.ts). The only credential accepted is an
+    // access token this server issued for this URL; a session cookie or the
+    // desktop's token does not open it, and an MCP token opens nothing else.
+    if (path === "/mcp") {
+      if (!env.BETTER_AUTH_SECRET) return fail(404, "Not found");
+      if (req.method !== "POST") return new Response(null, { status: 405, headers: { allow: "POST" } });
+      const auth = createAuth(env, url.origin);
+      const guarded = requireMcpAuth(
+        auth,
+        async (request, claims) => {
+          const tenant = typeof claims.sub === "string" ? await tenantOfUser(env, claims.sub) : null;
+          if (!tenant) return fail(403, "This account no longer exists");
+          return handleMcp(request, { tenant, stub: env.TENANT.get(env.TENANT.idFromName(tenant)), files: env.FILES });
+        },
+        { resource: mcpResource(url.origin), requiredScopes: [NOTES_READ] },
+      );
+      try {
+        return await guarded(req);
+      } catch (err) {
+        console.error("mcp failed", { message: err instanceof Error ? err.message : String(err) });
+        return fail(500, "Something went wrong");
+      }
     }
 
     // Create or update the control-plane tables. Run once after each deploy
@@ -105,18 +181,33 @@ export default {
       if (from !== url.origin) return fail(403, "Cross-site request refused");
     }
 
+    // One credential per request. A request that carries an Authorization
+    // header skipped the origin check above, so it must not fall back to the
+    // browser's cookie if that header turns out to be worthless.
+    if (req.headers.get("authorization") && req.headers.get("cookie")) {
+      const headers = new Headers(req.headers);
+      headers.delete("cookie");
+      req = new Request(req, { headers });
+    }
+
+    // Topic file names are note content; keep them out of the logs.
+    const logPath = path.startsWith("/api/v1/vault/") ? "/api/v1/vault/*" : path;
+
     let caller: Caller | null;
     try {
       caller = await authenticate(req, env, url.origin);
     } catch (err) {
       // "Could not check" is not "not signed in": a client must not drop its session over this.
-      console.error("auth failed", { path, message: err instanceof Error ? err.message : String(err) });
+      console.error("auth failed", { path: logPath, message: err instanceof Error ? err.message : String(err) });
       return fail(503, "Sign-in is temporarily unavailable");
     }
     if (!caller) return fail(401, "Not signed in");
 
     try {
       if (path === "/api/v1/sync" && req.method === "POST") {
+        const size = Number(req.headers.get("content-length") ?? "");
+        if (!Number.isFinite(size) || size <= 0) return fail(411, "Length required");
+        if (size > SYNC_MAX_BYTES) return fail(413, "Too much in one sync");
         const body = (await req.json()) as SyncRequest;
         if (!body || typeof body !== "object") return fail(400, "Bad request");
         // Cloudflare's guess at the caller's time zone decides which day a note is filed under.
@@ -190,7 +281,9 @@ export default {
         }
 
         if (req.method === "PUT") {
-          const declared = Number(req.headers.get("content-length") ?? "0");
+          // Without a declared length the whole body would be buffered before it could be refused.
+          const declared = Number(req.headers.get("content-length") ?? "");
+          if (!Number.isFinite(declared) || declared <= 0) return fail(411, "Length required");
           if (declared > IMAGE_MAX_BYTES) return fail(413, "Image too large");
           const bytes = await req.arrayBuffer();
           if (bytes.byteLength === 0) return fail(400, "Empty image");
@@ -210,7 +303,7 @@ export default {
       return fail(404, "Not found");
     } catch (err) {
       // Ids and sizes only; never request bodies.
-      console.error("request failed", { path, tenant: caller.tenant, message: err instanceof Error ? err.message : String(err) });
+      console.error("request failed", { path: logPath, tenant: caller.tenant, message: err instanceof Error ? err.message : String(err) });
       return fail(500, "Something went wrong");
     }
   },

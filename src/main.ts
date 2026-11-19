@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { renderCloud, wireCloud } from "./cloud";
 import { initImages } from "./images";
 import { clearCompleted, focusItem, loadItems } from "./outline";
-import { dayKey } from "./text";
+import { dayKey, escapeHtml } from "./text";
 import { setWeather, type WeatherUnit } from "./weather";
 import { showQuote } from "./quotes";
 
@@ -202,7 +202,7 @@ function renderMeeting(m: Meeting, now: number, nextDay: boolean): HTMLElement {
       <span class="m-when">${when}</span>
       <span class="m-title"></span>
       <span class="m-rel">${rel.label}</span>
-      ${m.url ? `<a class="m-join" href="${m.url.replace(/"/g, "&quot;")}" data-ext title="${joinLabel(m.url)}"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M21 3l-9 9M10 5H5v14h14v-5" /></svg></a>` : ""}
+      ${m.url ? `<a class="m-join" href="${escapeHtml(/^https?:\/\//i.test(m.url) ? m.url : "#")}" data-ext title="${escapeHtml(joinLabel(m.url))}"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M21 3l-9 9M10 5H5v14h14v-5" /></svg></a>` : ""}
     `;
     card.querySelector(".m-title")!.textContent = m.title;
     return card;
@@ -229,7 +229,7 @@ async function loadMeetings(_force = false) {
     checkAlerts();
     recordDays();
   } catch (err) {
-    $("#meetings").innerHTML = `<div class="error">Couldn't load calendar: ${String(err)}</div>`;
+    $("#meetings").innerHTML = `<div class="error">Couldn't load calendar: ${escapeHtml(String(err))}</div>`;
   } finally {
     btn.classList.remove("spin");
   }
@@ -270,7 +270,7 @@ async function showDay(offset: number) {
     recordDays();
   } catch (err) {
     if (seq !== dayLoadSeq) return;
-    $("#meetings").innerHTML = `<div class="error">Couldn't load calendar: ${String(err)}</div>`;
+    $("#meetings").innerHTML = `<div class="error">Couldn't load calendar: ${escapeHtml(String(err))}</div>`;
   }
 }
 

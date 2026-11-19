@@ -37,7 +37,7 @@ interface DayRec extends Record<string, SqlStorageValue> {
 }
 
 /** Bump when vault.ts changes what it writes, so every tenant's files are rebuilt. */
-const VAULT_VERSION = 1;
+const VAULT_VERSION = 2;
 const VAULT_DELAY_MS = 5_000;
 const hex = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
 
@@ -148,6 +148,31 @@ export class TenantDO extends DurableObject<Env> {
     this.claim(tenant);
     await this.buildVaultFiles();
     return this.sql.exec<{ path: string; size: number; updated: number }>("SELECT path, size, updated FROM vault ORDER BY path").toArray();
+  }
+
+  /** Lines of the outline and the daily files that contain every word of `query`. */
+  async vaultSearch(tenant: string, query: string, limit: number): Promise<{ path: string; line: string }[]> {
+    this.claim(tenant);
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 10);
+    if (!words.length) return [];
+    const rows = this.sql.exec<RowRec>("SELECT * FROM rows WHERE deleted = 0").toArray().map(toWire);
+    const days = this.sql.exec<DayRec>("SELECT * FROM days").toArray().map(dayToWire);
+    const files = buildVault(rows, days, { tz: this.meta("tz") ?? "UTC", origin: this.meta("origin") ?? "" });
+    const hits: { path: string; line: string }[] = [];
+    // Newest days first; topic and tag pages only repeat lines found elsewhere.
+    const paths = [...files.keys()].filter((p) => p === "outline.md" || p.startsWith("daily/")).sort((a, b) => (a === "outline.md" ? -1 : b === "outline.md" ? 1 : b.localeCompare(a)));
+    for (const path of paths) {
+      for (const raw of files.get(path)!.split("\n")) {
+        const line = raw.trim();
+        if (!line.startsWith("- ")) continue;
+        const low = line.toLowerCase();
+        if (words.every((w) => low.includes(w))) {
+          hits.push({ path, line: line.slice(0, 500) });
+          if (hits.length >= limit) return hits;
+        }
+      }
+    }
+    return hits;
   }
 
   /** The whole vault as one zip, built from the rows as they are now. */
@@ -266,6 +291,17 @@ export class TenantDO extends DurableObject<Env> {
 
 const str = (v: unknown, max: number): string | null => (typeof v === "string" && v.length <= max ? v : null);
 const int = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : null);
+/** Unix seconds within 1970..2200; anything else cannot be formatted as a date later. */
+const when = (v: unknown): number | null => {
+  const n = int(v);
+  return n === null ? null : Math.max(0, Math.min(7_258_118_400, n));
+};
+/** A `YYYY-MM-DD` that is a day on the calendar. */
+const realDay = (s: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+};
 const ID = /^[A-Za-z0-9_-]{1,40}$/;
 
 /** Validate a row from a client; the device is taken from the caller's credentials, never the body. */
@@ -274,14 +310,14 @@ function cleanRow(raw: WireRow, device: string): WireRow | null {
   const id = str(raw.id, 40);
   const text = str(raw.text, MAX_TEXT);
   const updated_at = int(raw.updated_at);
-  const created_at = int(raw.created_at);
+  const created_at = when(raw.created_at);
   if (!id || !ID.test(id) || text === null || updated_at === null || created_at === null) return null;
   const parent = raw.parent === null || raw.parent === undefined ? null : str(raw.parent, 40);
   if (parent !== null && !ID.test(parent)) return null;
   let schedule: WireRow["schedule"] = null;
   if (raw.schedule && typeof raw.schedule === "object") {
-    const start = int(raw.schedule.start);
-    const end = int(raw.schedule.end);
+    const start = when(raw.schedule.start);
+    const end = when(raw.schedule.end);
     if (start !== null && end !== null) {
       schedule = { start, end, all_day: !!raw.schedule.all_day, event_id: str(raw.schedule.event_id, 1024) };
     }
@@ -294,9 +330,9 @@ function cleanRow(raw: WireRow, device: string): WireRow | null {
     parent: parent === id ? null : parent,
     rank: str(raw.rank, 200) ?? "",
     created_at,
-    done_at: int(raw.done_at),
+    done_at: when(raw.done_at),
     schedule,
-    archived_at: int(raw.archived_at),
+    archived_at: when(raw.archived_at),
     // A clock far in the future would win every later conflict; cap it.
     updated_at: Math.min(updated_at, Date.now() + 5 * 60_000),
     updated_by: device,
@@ -307,7 +343,7 @@ function cleanRow(raw: WireRow, device: string): WireRow | null {
 function cleanDay(raw: WireDay, device: string): WireDay | null {
   if (!raw || typeof raw !== "object") return null;
   const updated_at = int(raw.updated_at);
-  if (typeof raw.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(raw.day) || updated_at === null || !Array.isArray(raw.events)) return null;
+  if (typeof raw.day !== "string" || !realDay(raw.day) || updated_at === null || !Array.isArray(raw.events)) return null;
   if (JSON.stringify(raw.events).length > 200_000) return null;
   return { day: raw.day, events: raw.events, updated_at: Math.min(updated_at, Date.now() + 5 * 60_000), updated_by: device };
 }

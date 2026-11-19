@@ -33,6 +33,8 @@ interface Event {
 const LINK_RE = /\[\[([^\[\]|\n]{1,80})\]\]/g;
 const TAG_RE = /(?:^|[\s(])#([A-Za-z][\w-]{0,49})(?![\w-])/g;
 const CODE_RE = /`[^`\n]+`/g;
+const MAX_PAGES = 2000;
+const MAX_PER_ROW = 20;
 
 /** A name that is safe as a file name on every system, and stable. */
 export function fileName(name: string): string {
@@ -49,10 +51,18 @@ function clock(tz: string) {
   const dayFmt = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" });
   const timeFmt = new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const titleFmt = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  // A date that cannot be formatted must not take the whole vault down with it.
+  const safe = (fn: () => string, fallback: string) => {
+    try {
+      return fn();
+    } catch {
+      return fallback;
+    }
+  };
   return {
-    day: (unix: number) => dayFmt.format(new Date(unix * 1000)),
-    time: (unix: number) => timeFmt.format(new Date(unix * 1000)),
-    title: (day: string) => titleFmt.format(new Date(`${day}T12:00:00Z`)),
+    day: (unix: number) => safe(() => dayFmt.format(new Date(unix * 1000)), "1970-01-01"),
+    time: (unix: number) => safe(() => timeFmt.format(new Date(unix * 1000)), "00:00"),
+    title: (day: string) => safe(() => titleFmt.format(new Date(`${day}T12:00:00Z`)), day),
   };
 }
 
@@ -116,7 +126,8 @@ export function buildVault(allRows: WireRow[], days: WireDay[], opts: VaultOptio
       for (const e of evs.sort((a, b) => (a.start ?? 0) - (b.start ?? 0))) {
         const when = e.all_day || !e.start ? "All day" : `${at.time(e.start)}${e.end ? `–${at.time(e.end)}` : ""}`;
         const where = e.location && !/^https?:/i.test(e.location) ? ` (${e.location})` : "";
-        out.push(`- ${when} ${e.title}${where}`);
+        // Titles and places come from calendar invites, so from anyone: one line each, nothing more.
+        out.push(`- ${when} ${oneLine(e.title!)}${where ? ` ${oneLine(where)}` : ""}`);
       }
       out.push("");
     }
@@ -151,10 +162,14 @@ export function buildVault(allRows: WireRow[], days: WireDay[], opts: VaultOptio
     const hit = into.get(key) ?? into.set(key, { name, rows: [] }).get(key)!;
     if (!hit.rows.includes(r)) hit.rows.push(r);
   };
+  // Each page is a file to write; a row or an account cannot ask for an unbounded number.
+  const room = (into: typeof topics, name: string) => into.size < MAX_PAGES || into.has(name.toLowerCase());
   for (const r of rows) {
     const text = r.text.replace(CODE_RE, "");
-    for (const m of text.matchAll(LINK_RE)) note(topics, fileName(m[1]), r);
-    for (const m of text.replace(LINK_RE, "").matchAll(TAG_RE)) note(tags, m[1], r);
+    let n = 0;
+    for (const m of text.matchAll(LINK_RE)) if (n++ < MAX_PER_ROW && room(topics, fileName(m[1]))) note(topics, fileName(m[1]), r);
+    n = 0;
+    for (const m of text.replace(LINK_RE, "").matchAll(TAG_RE)) if (n++ < MAX_PER_ROW && room(tags, m[1])) note(tags, m[1], r);
   }
   const mentions = (dir: string, title: string, found: typeof topics) => {
     for (const { name, rows: hits } of found.values()) {
@@ -186,6 +201,9 @@ export function buildVault(allRows: WireRow[], days: WireDay[], opts: VaultOptio
   files.set("index.md", index.join("\n"));
   return files;
 }
+
+/** Text from outside squeezed onto one line, so it cannot add lines or headings of its own. */
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 300);
 
 /** Row text without Markdown markers, for a short mention of it. */
 function plain(text: string): string {

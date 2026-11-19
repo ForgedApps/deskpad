@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Connect to Deskpad</title>
+    <style>
+      :root {
+        --bg: #15171c; --card: #1d2027; --field: #262a33; --fg: #e8eaf0; --fg-2: #9aa0ae;
+        --accent: #6c9cff; --accent-fg: #0f1320; --danger: #ff6b6b; --border: #2c3039; --ok: #4cd27f;
+        color-scheme: dark;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f7f7f9; --card: #ffffff; --field: #f0f1f5; --fg: #1b1d23; --fg-2: #5c6270;
+          --accent: #2f63d6; --accent-fg: #ffffff; --danger: #d64545; --border: #dcdee5; --ok: #1f9e58;
+          color-scheme: light;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100dvh; display: grid; place-items: center; padding: 16px;
+        background: var(--bg); color: var(--fg);
+        font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+      main { width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p { margin: 0 0 16px; color: var(--fg-2); }
+      button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      button {
+        width: 100%; padding: 11px 14px; font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer;
+        border: 1px solid var(--border); background: transparent; color: var(--fg);
+      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+      button.link { border: 0; width: auto; padding: 0; font-weight: 400; color: var(--accent); }
+      button.google { display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--field); }
+      button.google svg { width: 18px; height: 18px; flex-shrink: 0; }
+      button[disabled] { opacity: 0.6; cursor: wait; }
+      .row { display: flex; gap: 10px; }
+      .who { padding: 12px 14px; background: var(--field); border-radius: 8px; margin-bottom: 16px; overflow-wrap: anywhere; }
+      .who b { display: block; color: var(--fg); }
+      .who small { color: var(--fg-2); }
+      ul { margin: 0 0 16px; padding-left: 20px; color: var(--fg-2); }
+      .code { font: 600 22px/1 "Cascadia Code", Consolas, monospace; letter-spacing: 2px; text-align: center; padding: 14px; background: var(--field); border-radius: 8px; margin-bottom: 16px; }
+      .error { color: var(--danger); font-size: 13px; min-height: 20px; margin-top: 10px; }
+      .foot { margin: 16px 0 0; font-size: 13px; }
+      .ok { color: var(--ok); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Deskpad</h1>
+
+      <section id="v-loading"><p>One moment…</p></section>
+
+      <section id="v-auth" hidden>
+        <p>Sign in to choose whether an app may read your Deskpad notes.</p>
+        <button id="btn-google" class="google" type="button">Continue with Google</button>
+        <div class="error" id="auth-error" role="alert"></div>
+      </section>
+
+      <section id="v-approve" hidden>
+        <p>This app is asking to read the notes of <b id="who"></b>:</p>
+        <div class="who"><b id="client"></b><small id="dest"></small></div>
+        <ul>
+          <li>It can read your notes, tasks and the calendar days Deskpad has recorded.</li>
+          <li>It cannot change or delete anything.</li>
+          <li>The name above is whatever the app calls itself. Allow it only if you just started this from an app you trust.</li>
+        </ul>
+        <div class="row">
+          <button id="btn-deny" type="button">Cancel</button>
+          <button class="primary" id="btn-approve" type="button">Allow</button>
+        </div>
+        <div class="error" id="approve-error" role="alert"></div>
+      </section>
+
+      <section id="v-done" hidden>
+        <p id="done-text" class="error"></p>
+      </section>
+    </main>
+
+    <script type="module" src="/connect.js"></script>
+  </body>
+</html>

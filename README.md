@@ -47,6 +47,7 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, WebView2 frontend).
   tasks (nesting, pictures, offline). Open its address in the phone's
   browser, sign in, and add it to the home screen.
 - **Notes as Markdown**: when cloud sync is on, your notes are also kept in the cloud as a folder of Markdown files (the outline, one file per day, and a page for every `[[Topic]]` and `#tag` you type), ready to open in Obsidian or Logseq or to hand to an AI. Signed in at app.deskpad.win, download it from `https://app.deskpad.win/api/v1/vault.zip`.
+- **Notes for your AI (MCP)**: add `https://app.deskpad.win/mcp` as a custom connector in Claude (or any MCP client). You sign in with Google, approve the app by name, and it can then read and search your notes. It cannot change anything.
 - **Daily quote**: a line from the Stoics, Einstein and other thinkers sits at the bottom of the sidebar and changes each day. Keyboard shortcuts are listed in Settings.
 - **Weather**: set a city in Settings and today's weather shows under the clock: current temperature, conditions, the day's high and low, and the chance of rain next to a droplet. Leave the city empty for none.
 - **Moving rows**: drag a bullet (or a task's checkbox) to move the row, with

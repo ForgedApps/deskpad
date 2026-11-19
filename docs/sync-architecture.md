@@ -400,6 +400,14 @@ only changed files are written and vanished ones are deleted. It is read with
 copy: nothing reads the files back. Days are cut in the time zone Cloudflare
 reports for the last device that synced (`request.cf.timezone`).
 
+**MCP** (`cloud/src/mcp.ts`, `POST /mcp`): four read-only tools over the
+vault (`get_outline`, `list_files`, `read_file`, `search_notes`). Better
+Auth's `mcp` plugin makes the Worker an OAuth 2.1 server for it: a client
+registers itself, the user signs in and approves it on `/connect`, and the
+access token is a JWT whose audience is the `/mcp` URL and whose subject is
+the user, from which the Worker derives the tenant. The token is refused by
+every other route, and sessions are refused by `/mcp`.
+
 Deliberate differences from the design:
 
 - **Row ids stay numeric** (§5.1). The existing scheme, clock in microseconds

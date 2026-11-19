@@ -15,6 +15,8 @@ import { APIError } from "better-auth/api";
 import { getMigrations } from "better-auth/db/migration";
 import { bearer } from "better-auth/plugins/bearer";
 import { deviceAuthorization } from "better-auth/plugins/device-authorization";
+import { jwt } from "better-auth/plugins/jwt";
+import { mcp } from "@better-auth/mcp";
 
 /** The only client the device flow serves: the Windows app. */
 export const DESKTOP_CLIENT = "deskpad-desktop";
@@ -30,7 +32,22 @@ export interface Caller {
 export const CALENDAR_READ = "https://www.googleapis.com/auth/calendar.readonly";
 export const CALENDAR_WRITE = "https://www.googleapis.com/auth/calendar.events";
 
+/** What an MCP token may do: read the notes. There is no write scope. */
+export const NOTES_READ = "notes:read";
+
 export const googleConfigured = (env: Env) => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+
+/**
+ * The MCP endpoint's identity as an OAuth resource: access tokens are issued
+ * for exactly this URL and `/mcp` accepts no other audience. `wrangler dev`
+ * reports the custom domain over http, which the plugin refuses, so the scheme
+ * is fixed up there; nothing but tests runs that way.
+ */
+export function mcpResource(origin: string): string {
+  const u = new URL(origin);
+  const local = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]";
+  return `${local ? u.protocol : "https:"}//${u.host}/mcp`;
+}
 
 /** Bindings exist only inside a request, so the instance is built per request. */
 export function createAuth(env: Env, origin: string) {
@@ -53,9 +70,28 @@ export function createAuth(env: Env, origin: string) {
     secret: env.BETTER_AUTH_SECRET,
     database: env.DB,
     trustedOrigins: [origin],
+    // The jwt plugin's own /token would mint session JWTs with the key that
+    // signs MCP access tokens; nothing here uses it.
+    disabledPaths: ["/token"],
     // Passwords exist only for the automated tests (ALLOW_PASSWORD=1 in their
     // environment); no page offers them.
-    emailAndPassword: { enabled: env.ALLOW_PASSWORD === "1", minPasswordLength: 10, autoSignIn: true },
+    // Never together with open sign-up: an unverified email could be registered ahead of its owner.
+    emailAndPassword: { enabled: env.ALLOW_PASSWORD === "1" && (env.SIGNUP as string) !== "open", minPasswordLength: 10, autoSignIn: true },
+    // Counted in D1, because a Worker's memory is per instance and short-lived.
+    // Device codes, client registrations and sign-in attempts all write rows
+    // without a session, so they must not be free to repeat.
+    rateLimit: {
+      enabled: true,
+      storage: "database",
+      window: 60,
+      max: 120,
+      customRules: {
+        "/device/code": { window: 60, max: 10 },
+        "/oauth2/register": { window: 60, max: 10 },
+        "/sign-in/social": { window: 60, max: 20 },
+      },
+    },
+    advanced: { ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] } },
     socialProviders: google,
     // Google's refresh token is a standing key to someone's calendar.
     account: { encryptOAuthTokens: true },
@@ -68,9 +104,25 @@ export function createAuth(env: Env, origin: string) {
       bearer(),
       deviceAuthorization({
         verificationUri: "/device",
-        expiresIn: "15m",
+        expiresIn: "10m",
         interval: "3s",
         validateClient: (clientId) => clientId === DESKTOP_CLIENT,
+      }),
+      // OAuth for AI clients that read the notes over MCP (index.ts, mcp.ts).
+      // A client such as Claude registers itself, the user signs in with
+      // Google on /connect and approves it there, and the client gets a token
+      // that is good for /mcp only. Registration is open because MCP clients
+      // expect it; a registered client can do nothing until a signed-in user
+      // approves it by name.
+      jwt({ disableSettingJwtHeader: true }),
+      mcp({
+        loginPage: "/connect",
+        consentPage: "/connect",
+        resource: mcpResource(origin),
+        scopes: ["openid", "offline_access", NOTES_READ],
+        allowDynamicClientRegistration: true,
+        allowUnauthenticatedClientRegistration: true,
+        clientRegistrationDefaultApplicationType: "infer",
       }),
     ],
     databaseHooks: {
@@ -113,22 +165,13 @@ export async function migrate(env: Env, origin: string): Promise<string[]> {
 
 const TENANT_ID = /^[a-z0-9_-]{3,64}$/;
 
-/**
- * The tenant a user works in, created on first use. `FIRST_TENANT` lets the
- * very first tenant take a fixed id, so data synced before accounts existed
- * (under hand-issued tokens) carries over to the first account.
- */
+/** The tenant a user works in, created on first use with an unguessable id. */
 async function tenantOf(env: Env, userId: string, userName: string): Promise<string> {
   const find = () => env.DB.prepare("SELECT tenant_id FROM membership WHERE user_id = ? AND is_default = 1").bind(userId).first<{ tenant_id: string }>();
   const have = await find();
   if (have) return have.tenant_id;
 
-  let id = `t_${[...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-  const first = env.FIRST_TENANT ?? "";
-  if (TENANT_ID.test(first)) {
-    const any = await env.DB.prepare("SELECT COUNT(*) AS n FROM tenant").first<{ n: number }>();
-    if ((any?.n ?? 0) === 0) id = first;
-  }
+  const id = `t_${[...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
   const now = Date.now();
   // The unique index on a user's default membership settles a race between two
   // first requests: one insert wins, the other is ignored, both read the winner.
@@ -139,6 +182,14 @@ async function tenantOf(env: Env, userId: string, userName: string): Promise<str
   const made = await find();
   if (!made) throw new Error("could not create a tenant");
   return made.tenant_id;
+}
+
+/** The tenant behind an MCP access token's subject, or null when that user is gone. */
+export async function tenantOfUser(env: Env, userId: string): Promise<string | null> {
+  const user = await env.DB.prepare("SELECT name FROM user WHERE id = ?").bind(userId).first<{ name: string | null }>();
+  if (!user) return null;
+  const tenant = await tenantOf(env, userId, user.name ?? "");
+  return TENANT_ID.test(tenant) ? tenant : null;
 }
 
 /** Who a request's session belongs to, or null when it has none. */
