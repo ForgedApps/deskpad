@@ -66,7 +66,8 @@ function show(m: Meeting) {
   tick();
   window.clearInterval(timer);
   timer = window.setInterval(tick, 1000);
-  (m.url ? join : $<HTMLButtonElement>("#alert-dismiss")).focus();
+  // Dismiss is the default: a stray Enter or Space must not open a meeting.
+  $<HTMLButtonElement>("#alert-dismiss").focus();
 }
 
 function act(action: "dismiss" | "snooze", minutes = 0) {
@@ -89,10 +90,7 @@ window.addEventListener("DOMContentLoaded", () => {
   $("#alert-dismiss").addEventListener("click", () => act("dismiss"));
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") act("dismiss");
-    else if (e.key === "Enter" && document.activeElement?.tagName !== "BUTTON") {
-      if (current?.url) join();
-      else act("dismiss");
-    }
+    else if (e.key === "Enter" && document.activeElement?.tagName !== "BUTTON") act("dismiss");
   });
   listen<Meeting>("alert-show", (e) => show(e.payload)).catch((err) => console.error("listen failed", err));
   // Exposed for manual testing in a plain browser (no Tauri events there).
