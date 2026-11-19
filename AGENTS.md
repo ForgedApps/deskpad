@@ -24,6 +24,7 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src/images.ts` | Pasted images: `save_image` upload, `image_dir` + asset-protocol URLs for `renderInline` |
 | `src/journal.ts`, `journal.html` | Journal window: timeline of days, one day's events/notes/completed/scheduled, search, restore/delete of archived rows |
 | `src/text.ts` | `renderInline` (Markdown subset + links), `stripInline`, `dayKey` and other helpers shared by all windows |
+| `src/quotes.ts` | The day's quote in the sidebar footer: a bundled list, picked by local date (`quoteFor`), no network. Add only quotes with a traceable source |
 | `src/weather.ts` | Today's weather under the clock: city lookup, Open-Meteo with MET Norway as fallback, localStorage cache |
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |

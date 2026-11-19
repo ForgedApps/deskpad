@@ -6,6 +6,7 @@ import { initImages } from "./images";
 import { clearCompleted, focusItem, loadItems } from "./outline";
 import { dayKey } from "./text";
 import { setWeather, type WeatherUnit } from "./weather";
+import { showQuote } from "./quotes";
 
 interface Meeting {
   id: string;
@@ -72,8 +73,15 @@ function fmtHour(h: number): string {
 
 // ---------- clock ----------
 
+let quoteDay = "";
+
 function tickClock() {
   const now = new Date();
+  // The quote changes with the day, so a sidebar left open overnight follows.
+  if (now.toDateString() !== quoteDay) {
+    quoteDay = now.toDateString();
+    showQuote(now);
+  }
   $("#clock-time").textContent = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   $("#clock-date").textContent = now.toLocaleDateString([], {
     weekday: "long",

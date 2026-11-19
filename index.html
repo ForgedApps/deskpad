@@ -87,9 +87,7 @@
       <div id="outline" class="list outline"></div>
     </section>
 
-    <footer class="hint">
-      <kbd>Tab</kbd> nest · drag a bullet to move · <kbd>-</kbd> or <kbd>[]</kbd> task · <kbd>Ctrl</kbd>+<kbd>Space</kbd> capture
-    </footer>
+    <footer id="quote" class="quote"></footer>
 
     <div id="settings" class="modal hidden">
       <form id="settings-form" class="modal-card">
@@ -195,6 +193,21 @@
           <input id="s-autostart" type="checkbox" />
           Start Deskpad when I sign in to Windows
         </label>
+        <fieldset>
+          <legend>Shortcuts</legend>
+          <dl class="keys">
+            <dt><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></dt>
+            <dd>Nest a row, or move it back out</dd>
+            <dt><kbd>-</kbd> or <kbd>[]</kbd></dt>
+            <dd>Start a row with it to make a task</dd>
+            <dt><kbd>Ctrl</kbd>+<kbd>Enter</kbd></dt>
+            <dd>Switch a row between task and note</dd>
+            <dt>Drag a bullet</dt>
+            <dd>Move a row and everything under it</dd>
+            <dt><kbd>Ctrl</kbd>+<kbd>Space</kbd></dt>
+            <dd>Capture a note from anywhere</dd>
+          </dl>
+        </fieldset>
         <div id="settings-error" class="error"></div>
         <div class="modal-actions">
           <button type="button" id="btn-quit" class="danger">Quit Deskpad</button>
