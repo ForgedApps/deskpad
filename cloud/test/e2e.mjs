@@ -198,11 +198,42 @@ try {
   const g = new URL(social.url ?? "http://invalid");
   const scope = g.searchParams.get("scope") ?? "";
   ok(g.hostname === "accounts.google.com" && g.searchParams.get("client_id") === "test-client.apps.googleusercontent.com", "Continue with Google sends the browser to Google with our client");
-  ok(g.searchParams.get("redirect_uri") === `${ORIGIN}/api/auth/callback/google`, "the redirect is this server's callback");
+  // `wrangler dev` reports the configured custom domain as the host, so only the path is compared.
+  ok(new URL(g.searchParams.get("redirect_uri") ?? "http://invalid").pathname === "/api/auth/callback/google", "the redirect is this server's callback");
   ok(scope.includes("calendar.readonly") && scope.includes("calendar.events") && scope.includes("email"), "one consent asks for sign-in and the calendar");
   ok(g.searchParams.get("access_type") === "offline" && (g.searchParams.get("prompt") ?? "").includes("consent"), "and for a refresh token every time");
   ok((await call(web, "/google-token")).status === 404, "an account without a Google grant has no calendar token");
   ok((await call(tok.a1, "/google-token")).status === 404, "nor does a test token");
+
+  // --- the Markdown vault ---
+  const vt = Date.now() + 60_000;
+  await sync(tok.b1, 0, [
+    row("v1", "Plan for [[Project Kestrel]] #idea", vt, { rank: "A", created_at: 1_794_000_000 }),
+    row("v2", "call the vendor", vt, { rank: "A", parent: "v1", kind: "task", created_at: 1_794_000_100 }),
+    row("v3", "old and archived, about [[Project Kestrel]]", vt, { rank: "B", archived_at: 1_794_100_000, created_at: 1_793_000_000 }),
+    row("v4", "gone", vt, { rank: "C", deleted: true }),
+  ], [{ day: "2026-11-06", events: [{ id: "e", title: "Standup", start: 1_794_000_600, end: 1_794_002_400, all_day: false, location: null, url: null }], updated_at: vt, updated_by: "x" }]);
+  const vfiles = (await (await call(tok.b1, "/vault")).json()).files.map((f) => f.path);
+  ok(vfiles.includes("outline.md") && vfiles.includes("index.md"), "the vault lists the outline and the index");
+  ok(vfiles.includes("topics/Project Kestrel.md") && vfiles.includes("tags/idea.md"), "a [[link]] and a #tag each get a page");
+  const vget = async (token, file) => {
+    const res = await call(token, `/vault/${file.split("/").map(encodeURIComponent).join("/")}`);
+    return { status: res.status, text: await res.text() };
+  };
+  const outlineMd = (await vget(tok.b1, "outline.md")).text;
+  ok(/^- Plan for \[\[Project Kestrel\]\] #idea\n  - \[ \] call the vendor$/m.test(outlineMd), "the outline is nested bullets with task boxes");
+  ok(!outlineMd.includes("archived") && !outlineMd.includes("gone"), "archived and deleted rows are not in the outline");
+  const topicMd = (await vget(tok.b1, "topics/Project Kestrel.md")).text;
+  ok(topicMd.includes("2 mentions") && topicMd.includes("old and archived"), "a topic page gathers its mentions, archived ones too");
+  const dayFile = vfiles.find((f) => f.startsWith("daily/2026-11-0") && f !== "daily/2026-11-06.md") ?? "daily/2026-11-06.md";
+  const dailies = (await Promise.all(vfiles.filter((f) => f.startsWith("daily/")).map((f) => vget(tok.b1, f)))).map((f) => f.text).join("\n");
+  ok(dailies.includes("## Events") && dailies.includes("Standup") && dailies.includes("call the vendor"), `daily files hold events and that day's rows (${dayFile})`);
+  ok((await vget(tok.a1, "topics/Project Kestrel.md")).status === 404, "another tenant cannot read the file");
+  ok((await call(tok.b1, "/vault/x%5C..%5Cy.md")).status === 400 && (await call(tok.b1, "/vault/a/b/c.md")).status === 400 && (await call(tok.b1, "/vault/notes.txt")).status === 400, "paths outside the vault are refused");
+  const zipped = new Uint8Array(await (await call(tok.b1, "/vault.zip")).arrayBuffer());
+  ok(zipped[0] === 0x50 && zipped[1] === 0x4b && Buffer.from(zipped).includes("deskpad/outline.md"), "the zip holds the same files");
+  await sync(tok.b1, 0, [row("v3", "old and archived, no link now", vt + 5, { rank: "B", archived_at: 1_794_100_000 }), row("v1", "Plan, untagged", vt + 5, { rank: "A" })]);
+  ok(!(await (await call(tok.b1, "/vault")).json()).files.some((f) => f.path.startsWith("topics/")), "a topic nobody mentions any more is removed");
 
   // Signing out ends the session.
   ok((await auth("/sign-out", {}, granted.access_token)).status === 200, "the desktop signs out");

@@ -563,6 +563,16 @@ body.dragging-rows * {
 .row .txt strong {
   font-weight: 600;
 }
+/* [[Topic]] and #tag in a row; the cloud's Markdown copy indexes them. */
+.row .txt .wl,
+.row .txt .tag {
+  color: var(--accent);
+}
+.row .txt .wl {
+  background: var(--accent-soft);
+  padding: 0 5px;
+  border-radius: 4px;
+}
 .row .txt code {
   font-family: Cascadia Code, Consolas, monospace;
   font-size: 0.9em;

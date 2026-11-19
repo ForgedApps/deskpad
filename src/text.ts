@@ -36,6 +36,9 @@ function styled(s: string): string {
   h = h.replace(/~~(\S(?:[^~]*?\S)?)~~/g, "<s>$1</s>");
   h = h.replace(/(^|[^\w*])\*(\S(?:[^*]*?\S)?)\*(?=[^\w*]|$)/g, "$1<em>$2</em>");
   h = h.replace(/(^|[^\w_])_(\S(?:[^_]*?\S)?)_(?=[^\w_]|$)/g, "$1<em>$2</em>");
+  // [[Topic]] and #tag: what the cloud's Markdown copy turns into topic and tag pages.
+  h = h.replace(/\[\[([^\[\]|\n]{1,80})\]\]/g, '<span class="wl">$1</span>');
+  h = h.replace(/(^|[\s(])#([A-Za-z][\w-]{0,49})(?![\w-])/g, '$1<span class="tag">#$2</span>');
   return h;
 }
 
@@ -84,6 +87,7 @@ export function stripInline(text: string): string {
     .replace(/!\[[^\]\n]*\]\(img:[\w.-]+\)/g, "")
     .replace(/!\[[^\]\n]*\]\(img:[\w.-]+\)/g, "")
     .replace(/\[([^\]\n]+)\]\((?:https?:\/\/|www\.)[^\s)]+\)/gi, "$1")
+    .replace(/\[\[([^\[\]|\n]{1,80})\]\]/g, "$1")
     .replace(/\*\*(\S(?:[^*]*?\S)?)\*\*/g, "$1")
     .replace(/~~(\S(?:[^~]*?\S)?)~~/g, "$1")
     .replace(/(^|[^\w*])\*(\S(?:[^*]*?\S)?)\*(?=[^\w*]|$)/g, "$1$2")

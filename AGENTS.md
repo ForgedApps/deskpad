@@ -30,7 +30,7 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |
 | `index.html`, `capture.html`, `tab.html`, `alert.html` | One page per window (Vite multi-page) |
 | `src/cloud.ts` | Settings → Cloud sync: sign in (device flow), status, "sync now" |
-| `cloud/` | The Worker: `src/index.ts` (routes, who is calling), `src/auth.ts` (Better Auth on D1, tenants), `src/tenant-do.ts` (one Durable Object per tenant), tests. `public/` is build output |
+| `cloud/` | The Worker: `src/index.ts` (routes, who is calling), `src/auth.ts` (Better Auth on D1, tenants), `src/tenant-do.ts` (one Durable Object per tenant), `src/vault.ts` (the notes as Markdown files in R2 under `t/<tenant>/md/`, rebuilt by the object's alarm after a sync; `buildVault` is pure, and `VAULT_VERSION` in `tenant-do.ts` must be bumped when its output changes; `[[Topic]]` and `#tag` are matched there and in `renderInline`, keep the two patterns the same), tests. `public/` is build output |
 | `web/` | The mobile web app: `index.html`, `src/main.ts` (page, sign-in, toolbar), `src/store.ts` (IndexedDB + sync), `src/core.ts` (pure merge code, twin of the Rust), `src/shim/` (stand-ins for the Tauri imports), `public/` (sign-in page `device.html`, service worker, manifest) |
 | `vite.web.config.ts` | Builds `web/` into `cloud/public` with the Tauri imports aliased to the shims |
 | `shared/protocol.ts` | Wire types shared by the Worker and (later) the web app; `sync.rs` mirrors them |

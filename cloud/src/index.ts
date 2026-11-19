@@ -119,7 +119,36 @@ export default {
       if (path === "/api/v1/sync" && req.method === "POST") {
         const body = (await req.json()) as SyncRequest;
         if (!body || typeof body !== "object") return fail(400, "Bad request");
-        return json(await tenantStub(env, caller).sync(caller.tenant, caller.device, body));
+        // Cloudflare's guess at the caller's time zone decides which day a note is filed under.
+        const tz = typeof req.cf?.timezone === "string" ? req.cf.timezone : undefined;
+        return json(await tenantStub(env, caller).sync(caller.tenant, caller.device, body, { tz, origin: url.origin }));
+      }
+
+      // The notes as Markdown files (see vault.ts): the list, one zip, or one file.
+      if (path === "/api/v1/vault" && req.method === "GET") {
+        return json({ files: await tenantStub(env, caller).vaultList(caller.tenant) });
+      }
+      if (path === "/api/v1/vault.zip" && req.method === "GET") {
+        const bytes = await tenantStub(env, caller).vaultZip(caller.tenant);
+        return new Response(bytes, {
+          headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="deskpad-notes.zip"', "cache-control": "private, no-store" },
+        });
+      }
+      if (path.startsWith("/api/v1/vault/") && req.method === "GET") {
+        let file: string;
+        try {
+          file = decodeURIComponent(path.slice("/api/v1/vault/".length));
+        } catch {
+          return fail(400, "Bad file name");
+        }
+        if (file.includes("..") || file.includes("\\") || !/^(?:[^/]+\/)?[^/]+\.md$/.test(file)) return fail(400, "Bad file name");
+        // Brings the files up to date before reading one.
+        await tenantStub(env, caller).vaultList(caller.tenant);
+        const obj = await env.FILES.get(`t/${caller.tenant}/md/${file}`);
+        if (!obj) return fail(404, "No such file");
+        return new Response(obj.body, {
+          headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "private, no-store", "x-content-type-options": "nosniff" },
+        });
       }
 
       if (path === "/api/v1/export" && req.method === "GET") {

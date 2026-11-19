@@ -388,6 +388,18 @@ the mobile web app served by the same Worker. `npm test` and
 the merge rules, accounts and the device flow, cross-tenant isolation, and the
 real desktop engine against a local Worker.
 
+Also built, and not in the design above: **the Markdown vault**
+(`cloud/src/vault.ts`). Five seconds after a sync changes anything, the
+tenant's object (its alarm) regenerates the notes as Markdown and writes the
+files that changed to the bucket under `t/<tenant>/md/`: `outline.md`,
+`daily/YYYY-MM-DD.md`, `topics/<name>.md` for `[[name]]`, `tags/<tag>.md` for
+`#tag`, `index.md`. A `vault` table in the object holds each file's hash so
+only changed files are written and vanished ones are deleted. It is read with
+`GET /api/v1/vault` (list), `/api/v1/vault/<path>` (one file) and
+`/api/v1/vault.zip`, all by session like everything else. It is a one-way
+copy: nothing reads the files back. Days are cut in the time zone Cloudflare
+reports for the last device that synced (`request.cf.timezone`).
+
 Deliberate differences from the design:
 
 - **Row ids stay numeric** (§5.1). The existing scheme, clock in microseconds

@@ -7,6 +7,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { newer, PAGE, type ExportResponse, type SyncRequest, type SyncResponse, type WireDay, type WireRow } from "../../shared/protocol";
 
+import { buildVault, zip } from "./vault";
+
 type Sql = string | number | null;
 
 interface RowRec extends Record<string, SqlStorageValue> {
@@ -33,6 +35,11 @@ interface DayRec extends Record<string, SqlStorageValue> {
   updated_by: string;
   seq: number;
 }
+
+/** Bump when vault.ts changes what it writes, so every tenant's files are rebuilt. */
+const VAULT_VERSION = 1;
+const VAULT_DELAY_MS = 5_000;
+const hex = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
 
 const MAX_TEXT = 20_000;
 const MAX_ROWS = 200_000;
@@ -70,6 +77,7 @@ export class TenantDO extends DurableObject<Env> {
         seq INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS days_seq ON days(seq);
+      CREATE TABLE IF NOT EXISTS vault (path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL, updated INTEGER NOT NULL);
     `);
   }
 
@@ -93,9 +101,72 @@ export class TenantDO extends DurableObject<Env> {
     return Number(this.meta("seq") ?? "0");
   }
 
-  /** Push the caller's changes and return what it hasn't seen yet. */
-  async sync(tenant: string, device: string, req: SyncRequest): Promise<SyncResponse> {
+  // ----- the Markdown vault (vault.ts), kept in the bucket under t/<tenant>/md/ -----
+
+  private vaultKey(path: string): string {
+    return `t/${this.meta("tenant")}/md/${path}`;
+  }
+
+  /** Rewrite the files that changed since the last build. Cheap when nothing did. */
+  private async buildVaultFiles(): Promise<void> {
+    if (this.meta("tenant") === null) return;
+    const seq = this.seq();
+    const stamp = `${VAULT_VERSION}:${seq}:${this.meta("tz") ?? ""}`;
+    if (this.meta("vault") === stamp) return;
+    const rows = this.sql.exec<RowRec>("SELECT * FROM rows WHERE deleted = 0").toArray().map(toWire);
+    const days = this.sql.exec<DayRec>("SELECT * FROM days").toArray().map(dayToWire);
+    const files = buildVault(rows, days, { tz: this.meta("tz") ?? "UTC", origin: this.meta("origin") ?? "" });
+    const known = new Map(this.sql.exec<{ path: string; hash: string }>("SELECT path, hash FROM vault").toArray().map((f) => [f.path, f.hash]));
+    const now = Date.now();
+    for (const [path, body] of files) {
+      const bytes = new TextEncoder().encode(body);
+      const hash = hex(await crypto.subtle.digest("SHA-256", bytes));
+      if (known.get(path) !== hash) {
+        await this.env.FILES.put(this.vaultKey(path), bytes, { httpMetadata: { contentType: "text/markdown; charset=utf-8" } });
+        this.sql.exec(
+          "INSERT INTO vault (path, hash, size, updated) VALUES (?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, size = excluded.size, updated = excluded.updated",
+          path, hash, bytes.length, now,
+        );
+      }
+      known.delete(path);
+    }
+    // What is left no longer exists (a topic nobody mentions any more, a day emptied).
+    for (const path of known.keys()) {
+      await this.env.FILES.delete(this.vaultKey(path));
+      this.sql.exec("DELETE FROM vault WHERE path = ?", path);
+    }
+    this.setMeta("vault", stamp);
+  }
+
+  /** Runs a few seconds after a sync changed something. */
+  async alarm(): Promise<void> {
+    await this.buildVaultFiles();
+  }
+
+  /** The vault's files, brought up to date first. */
+  async vaultList(tenant: string): Promise<{ path: string; size: number; updated: number }[]> {
     this.claim(tenant);
+    await this.buildVaultFiles();
+    return this.sql.exec<{ path: string; size: number; updated: number }>("SELECT path, size, updated FROM vault ORDER BY path").toArray();
+  }
+
+  /** The whole vault as one zip, built from the rows as they are now. */
+  async vaultZip(tenant: string): Promise<Uint8Array> {
+    this.claim(tenant);
+    const rows = this.sql.exec<RowRec>("SELECT * FROM rows WHERE deleted = 0").toArray().map(toWire);
+    const days = this.sql.exec<DayRec>("SELECT * FROM days").toArray().map(dayToWire);
+    const files = buildVault(rows, days, { tz: this.meta("tz") ?? "UTC", origin: this.meta("origin") ?? "" });
+    const enc = new TextEncoder();
+    return zip([...files].map(([path, body]) => ({ path: `deskpad/${path}`, body: enc.encode(body) })));
+  }
+
+  /** Push the caller's changes and return what it hasn't seen yet. */
+  async sync(tenant: string, device: string, req: SyncRequest, where?: { tz?: string; origin?: string }): Promise<SyncResponse> {
+    this.claim(tenant);
+    // The vault files days by the user's clock; the last device to sync says where that is.
+    if (where?.tz && where.tz !== this.meta("tz")) this.setMeta("tz", where.tz);
+    if (where?.origin && where.origin !== this.meta("origin")) this.setMeta("origin", where.origin);
+    const before = this.seq();
     const since = Number.isFinite(req.since) && req.since > 0 ? Math.floor(req.since) : 0;
     // The server's copy of anything it refused, so the client can settle on it.
     const refusedRows: WireRow[] = [];
@@ -143,6 +214,11 @@ export class TenantDO extends DurableObject<Env> {
       }
       this.setMeta("seq", String(seq));
     });
+
+    // Something changed: refresh the Markdown copy shortly, once for a burst of saves.
+    if (this.seq() !== before && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + VAULT_DELAY_MS);
+    }
 
     // One page of changes after `since`, rows and days interleaved by seq.
     const rows = this.sql.exec<RowRec>("SELECT * FROM rows WHERE seq > ? ORDER BY seq LIMIT ?", since, PAGE + 1).toArray();
