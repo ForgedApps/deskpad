@@ -13,8 +13,8 @@
 //! change stays and goes out on the next cycle.
 //!
 //! Nothing here runs until this PC is signed in: `cloud.json` then holds the
-//! server address and a session token obtained through the device sign-in
-//! flow (`begin_sign_in`, `finish_sign_in`), never typed by hand.
+//! server address and a session token obtained through the browser sign-in
+//! (`sign_in`: loopback redirect with PKCE), never typed by hand.
 
 use crate::calendar::Meeting;
 use crate::rank;
@@ -143,8 +143,6 @@ pub const DEFAULT_URL: &str = "https://app.deskpad.win";
 /// Where the server lived before it had its own domain; a PC still pointing
 /// there is moved to `DEFAULT_URL` the next time it signs in.
 pub const RETIRED_URLS: &[&str] = &["https://deskpad-cloud.jgentes.workers.dev"];
-/// How the Worker knows the device flow was started by the Windows app.
-const CLIENT_ID: &str = "deskpad-desktop";
 
 /// `cloud.json`: where to sync and as whom. Never synced, never logged.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -526,84 +524,114 @@ async fn post_sync(client: &reqwest::Client, cfg: &CloudConfig, since: i64, rows
     }
 }
 
-/// A device sign-in in progress (RFC 8628): the page to open, the code the
-/// user compares there, and what to poll with.
-#[derive(Deserialize)]
-pub struct DeviceCode {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri_complete: String,
-    #[serde(default)]
-    pub interval: u64,
-    #[serde(default)]
-    pub expires_in: u64,
-}
-
 fn auth_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder().timeout(Duration::from_secs(20)).user_agent("Deskpad").build().map_err(|e| e.to_string())
 }
 
-/// Start a sign-in: ask the server for a device code.
-pub async fn begin_sign_in(url: &str) -> Result<DeviceCode, String> {
+/// Sign this PC in through the browser; returns this device's session token.
+///
+/// A loopback redirect with PKCE (RFC 8252): the app listens on 127.0.0.1 at
+/// a random port and opens `/device` with a challenge, that port and a state
+/// value. The user signs in there and clicks Connect; the server then sends
+/// the browser to `http://127.0.0.1:<port>/callback` with a one-time code,
+/// and the app trades that code plus the verifier for a session. The code can
+/// only ever reach the computer whose browser approved it, and it is useless
+/// without the verifier, which never leaves this process. (The device-code
+/// flow this replaced let anyone start a sign-in and send the approval link
+/// to someone else.)
+pub async fn sign_in<F: FnOnce(&str)>(url: &str, cancel: &AtomicBool, open_browser: F) -> Result<String, String> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use rand::RngCore;
+    use sha2::{Digest, Sha256};
+
+    let mut raw = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut raw);
+    let verifier = URL_SAFE_NO_PAD.encode(raw);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let mut st = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut st);
+    let state = URL_SAFE_NO_PAD.encode(st);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("Could not start the sign-in: {e}"))?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    open_browser(&format!("{url}/device?challenge={challenge}&port={port}&state={state}"));
+
+    // Wait for the browser, checking for Cancel between polls of the listener.
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let code = loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Sign-in cancelled.".into());
+        }
+        if Instant::now() > deadline {
+            return Err("The sign-in took too long. Try again.".into());
+        }
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if let Some(result) = answer_callback(stream, &state) {
+                    break result?;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => tokio::time::sleep(Duration::from_millis(200)).await,
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+
+    #[derive(Deserialize)]
+    struct Answer {
+        token: Option<String>,
+    }
     let res = auth_client()?
-        .post(format!("{url}/api/auth/device/code"))
-        .header("origin", url)
-        .json(&serde_json::json!({ "client_id": CLIENT_ID }))
+        .post(format!("{url}/api/v1/link/token"))
+        .json(&serde_json::json!({ "code": code, "verifier": verifier }))
         .send()
         .await
         .map_err(|e| format!("Could not reach the Deskpad server: {}", e.without_url()))?;
     if !res.status().is_success() {
-        return Err(format!("The Deskpad server refused to start a sign-in ({}).", res.status().as_u16()));
+        return Err("The Deskpad server could not complete the sign-in. Try again.".into());
     }
-    let code: DeviceCode = res.json().await.map_err(|e| format!("The Deskpad server sent something unexpected: {e}"))?;
-    // The page to open must be on the server we asked, whatever the answer says.
-    if !code.verification_uri_complete.starts_with(&format!("{url}/")) {
-        return Err("The Deskpad server sent a sign-in page on another site.".into());
-    }
-    Ok(code)
+    let answer: Answer = res.json().await.map_err(|e| format!("The Deskpad server sent something unexpected: {e}"))?;
+    answer.token.filter(|t| t.len() >= 32).ok_or_else(|| "The Deskpad server could not complete the sign-in. Try again.".into())
 }
 
-/// Wait for the user to approve in the browser; returns this device's session token.
-pub async fn finish_sign_in(url: &str, code: &DeviceCode, cancel: &AtomicBool) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct Answer {
-        access_token: Option<String>,
-        error: Option<String>,
-    }
-    let client = auth_client()?;
-    let mut interval = code.interval.clamp(2, 30);
-    let deadline = Instant::now() + Duration::from_secs(code.expires_in.clamp(60, 1800));
-    while Instant::now() < deadline {
-        for _ in 0..interval * 4 {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Sign-in cancelled.".into());
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        let res = match client
-            .post(format!("{url}/api/auth/device/token"))
-            .header("origin", url)
-            .json(&serde_json::json!({ "grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": code.device_code, "client_id": CLIENT_ID }))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            // A dropped connection while waiting is not the end of the sign-in.
-            Err(_) => continue,
-        };
-        let answer: Answer = res.json().await.unwrap_or(Answer { access_token: None, error: Some("server_error".into()) });
-        if let Some(token) = answer.access_token.filter(|t| t.len() >= 32) {
-            return Ok(token);
-        }
-        match answer.error.as_deref() {
-            Some("authorization_pending") => {}
-            Some("slow_down") => interval = (interval + 5).min(30),
-            Some("access_denied") => return Err("The sign-in was cancelled in the browser.".into()),
-            Some("expired_token") => return Err("The sign-in took too long. Try again.".into()),
-            _ => return Err("The Deskpad server could not complete the sign-in.".into()),
+/// Read one request that reached the loopback listener. `None` for anything
+/// that is not the browser coming back with our state (a favicon, a stray
+/// request), which keeps the sign-in waiting; otherwise the code, or why not.
+fn answer_callback(mut stream: std::net::TcpStream, expected_state: &str) -> Option<Result<String, String>> {
+    use std::io::{Read, Write};
+    stream.set_nonblocking(false).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+    let mut buf = [0u8; 4096];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let target = req.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("/");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let (mut code, mut state, mut error) = (None, None, None);
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        match k {
+            "code" => code = Some(v.to_string()),
+            "state" => state = Some(v.to_string()),
+            "error" => error = Some(v.to_string()),
+            _ => {}
         }
     }
-    Err("The sign-in took too long. Try again.".into())
+    if path != "/callback" || state.as_deref() != Some(expected_state) {
+        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return None;
+    }
+    let (text, result) = match (code, error) {
+        (Some(c), None) if !c.is_empty() => ("Deskpad is connected. You can close this tab.", Ok(c)),
+        _ => ("Sign-in cancelled. Nothing was connected.", Err("The sign-in was cancelled in the browser.".to_string())),
+    };
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Deskpad</title></head><body style=\"font-family:Segoe UI,sans-serif;background:#15171c;color:#e8eaf0;display:grid;place-items:center;height:100vh;margin:0\"><h2>{text}</h2></body></html>"
+    );
+    let _ = stream.write_all(
+        format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}", html.len()).as_bytes(),
+    );
+    Some(result)
 }
 
 /// What the account's Google grant allows, and a token to use it with.
@@ -886,6 +914,33 @@ pub async fn run(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the browser sends back to the loopback listener, and what counts.
+    #[test]
+    fn loopback_callback_takes_only_our_state() {
+        use std::io::{Read, Write};
+        let ask = |path: &str| -> (Option<Result<String, String>>, String) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let path = path.to_string();
+            let browser = std::thread::spawn(move || {
+                let mut c = std::net::TcpStream::connect(addr).unwrap();
+                c.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes()).unwrap();
+                let mut out = String::new();
+                c.read_to_string(&mut out).ok();
+                out
+            });
+            let (stream, _) = listener.accept().unwrap();
+            let got = answer_callback(stream, "S1");
+            (got, browser.join().unwrap())
+        };
+        let (got, page) = ask("/callback?code=abc&state=S1");
+        assert_eq!(got, Some(Ok("abc".to_string())));
+        assert!(page.starts_with("HTTP/1.1 200") && page.contains("connected"));
+        assert_eq!(ask("/callback?code=abc&state=OTHER").0, None, "another state is ignored");
+        assert_eq!(ask("/favicon.ico").0, None, "a stray request keeps it waiting");
+        assert!(matches!(ask("/callback?error=access_denied&state=S1").0, Some(Err(_))), "Cancel in the browser ends it");
+    }
 
     /// The server's merge rule, as in cloud/src/tenant-do.ts.
     #[derive(Default)]

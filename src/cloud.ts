@@ -1,7 +1,7 @@
 // The "Cloud sync" section of the settings dialog. Sync itself lives in the
 // backend (`sync.rs`); this signs the PC in or out and shows how sync is going.
 // Signing in happens in the browser: the backend opens the approval page and
-// waits, and this shows the code to compare meanwhile.
+// waits for the browser to come back to it on 127.0.0.1.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -11,6 +11,7 @@ interface CloudStatus {
   url: string;
   device: string;
   account: string;
+  /** Non-null while a sign-in waits in the browser. */
   signing_in: string | null;
   /** Whether the account gives calendar access; null until the backend has asked. */
   calendar: boolean | null;
@@ -31,14 +32,11 @@ export async function renderCloud() {
     console.error("cloud_status failed", err);
     return;
   }
-  const waiting = !!s.signing_in;
+  const waiting = s.signing_in !== null;
   $("#cloud-on").classList.toggle("hidden", !s.configured || waiting);
   $("#cloud-off").classList.toggle("hidden", s.configured || waiting);
   $("#cloud-wait").classList.toggle("hidden", !waiting);
-  if (waiting) {
-    $("#cloud-code").textContent = s.signing_in;
-    return;
-  }
+  if (waiting) return;
   if (!s.configured) {
     // Signed out behind our back (session ended elsewhere or expired).
     if (s.error) $("#cloud-error").textContent = s.error;

@@ -1,7 +1,7 @@
 # Deskpad cloud: sync, backup and multi-tenancy
 
 Status: steps 1 to 4 of §11 are built and deployed (see "What is built" at the
-end): the sync Worker, Better Auth sign-in with the device flow, and the
+end): the sync Worker, Better Auth sign-in (loopback + PKCE for the desktop), and the
 mobile web app. Sign-up is still closed to the first account. This document
 describes the infrastructure Deskpad syncs through
 so that a later public sign-up
@@ -382,10 +382,10 @@ only A's rows and images, including after deleting B.
 Built and deployed: `cloud/` (Worker, `TenantDO`, R2 images, `/sync`,
 `/export`, `/status`, Better Auth in `src/auth.ts`, the `/device` sign-in and
 approval page), `shared/protocol.ts`, on the desktop `rank.rs`, `sync.rs`,
-the device sign-in flow and the Cloud sync section in Settings, and `web/`,
+the browser sign-in and the Cloud sync section in Settings, and `web/`,
 the mobile web app served by the same Worker. `npm test` and
 `npm run test:desktop` in `cloud/` and `npm run test:web` at the root cover
-the merge rules, accounts and the device flow, cross-tenant isolation, and the
+the merge rules, accounts and the desktop sign-in, cross-tenant isolation, and the
 real desktop engine against a local Worker.
 
 Also built, and not in the design above: **the Markdown vault**
@@ -409,6 +409,15 @@ the user, from which the Worker derives the tenant. The token is refused by
 every other route, and sessions are refused by `/mcp`.
 
 Deliberate differences from the design:
+
+- **The desktop signs in with a loopback redirect and PKCE, not the device
+  flow** (§6 item 3). The device flow was built first and dropped on
+  2026-11-23: anyone could start a code and send the approval link to a
+  signed-in user, and one click on Connect gave the sender a 90-day session.
+  Now the app listens on 127.0.0.1, `/api/v1/link/approve` sends a one-time
+  code (2 minutes, stored hashed in D1 `desktop_link`) only to
+  `http://127.0.0.1:<port>/callback`, and `/api/v1/link/token` trades it,
+  once, with the PKCE verifier for a session.
 
 - **Row ids stay numeric** (§5.1). The existing scheme, clock in microseconds
   with a random last three digits, already makes a cross-device collision a

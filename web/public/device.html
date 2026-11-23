@@ -57,7 +57,6 @@
       .mock .box.done { background: var(--accent); border-color: var(--accent); }
       .mock .box.done::after { content: ""; position: absolute; left: 3.5px; top: 1px; width: 3px; height: 6px; border: solid var(--accent-fg); border-width: 0 1.5px 1.5px 0; transform: rotate(40deg); }
       .mock .struck { color: var(--fg-2); text-decoration: line-through; }
-      .code { font: 600 22px/1 "Cascadia Code", Consolas, monospace; letter-spacing: 2px; text-align: center; padding: 14px; background: var(--field); border-radius: 8px; margin-bottom: 16px; }
       .error { color: var(--danger); font-size: 13px; min-height: 20px; margin-top: 10px; }
       .foot { margin: 16px 0 0; font-size: 13px; }
       .ok { color: var(--ok); }
@@ -97,13 +96,12 @@
       </section>
 
       <section id="v-approve" hidden>
-        <p>Connect the Deskpad app on your PC to <b id="who"></b>? Check that it shows this code:</p>
-        <div class="code" id="code"></div>
+        <p>Connect the Deskpad app on this PC to <b id="who"></b>?</p>
         <div class="row">
           <button id="btn-deny" type="button">Cancel</button>
           <button class="primary" id="btn-approve" type="button">Connect</button>
         </div>
-        <p class="foot">Only connect if you clicked <b>Sign in</b> in Deskpad on this PC a moment ago. Whoever holds this code gets your notes and calendar; if a link or a person sent you here, cancel.</p>
+        <p class="foot">The connection goes only to the Deskpad app running on this computer.</p>
         <div class="error" id="approve-error" role="alert"></div>
       </section>
 

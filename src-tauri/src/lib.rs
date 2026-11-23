@@ -745,14 +745,17 @@ async fn cloud_sign_in(app: AppHandle, cloud: State<'_, sync::Cloud>) -> Result<
     let url = Some(cloud.config.lock().unwrap().url.trim_end_matches('/').to_string())
         .filter(|u| !u.is_empty() && !sync::RETIRED_URLS.contains(&u.as_str()))
         .unwrap_or_else(|| sync::DEFAULT_URL.to_string());
-    let code = sync::begin_sign_in(&url).await?;
     cloud.cancel_sign_in.store(false, Ordering::Relaxed);
-    cloud.status.lock().unwrap().signing_in = Some(code.user_code.clone());
+    // Waiting for the browser; there is no code to show any more.
+    cloud.status.lock().unwrap().signing_in = Some(String::new());
     app.emit("cloud-status", ()).ok();
-    if let Err(e) = app.opener().open_url(code.verification_uri_complete.clone(), None::<&str>) {
-        eprintln!("[sync] could not open the browser: {e}");
-    }
-    let result = sync::finish_sign_in(&url, &code, &cloud.cancel_sign_in).await;
+    let opener = app.opener();
+    let result = sync::sign_in(&url, &cloud.cancel_sign_in, |page| {
+        if let Err(e) = opener.open_url(page, None::<&str>) {
+            eprintln!("[sync] could not open the browser: {e}");
+        }
+    })
+    .await;
     cloud.status.lock().unwrap().signing_in = None;
     match result {
         Ok(token) => {

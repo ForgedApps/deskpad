@@ -14,18 +14,16 @@ import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
 import { getMigrations } from "better-auth/db/migration";
 import { bearer } from "better-auth/plugins/bearer";
-import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { jwt } from "better-auth/plugins/jwt";
 import { mcp } from "@better-auth/mcp";
-
-/** The only client the device flow serves: the Windows app. */
-export const DESKTOP_CLIENT = "deskpad-desktop";
 
 export interface Caller {
   tenant: string;
   device: string;
   /** The signed-in account's email, for "Signed in as …" in the apps. */
   account?: string;
+  /** The account's user id; only callers with a real session have one. */
+  userId?: string;
 }
 
 /** Read every calendar the user has; create and change events. */
@@ -78,15 +76,14 @@ export function createAuth(env: Env, origin: string) {
     // Never together with open sign-up: an unverified email could be registered ahead of its owner.
     emailAndPassword: { enabled: env.ALLOW_PASSWORD === "1" && (env.SIGNUP as string) !== "open", minPasswordLength: 10, autoSignIn: true },
     // Counted in D1, because a Worker's memory is per instance and short-lived.
-    // Device codes, client registrations and sign-in attempts all write rows
-    // without a session, so they must not be free to repeat.
+    // Client registrations and sign-in attempts write rows without a
+    // session, so they must not be free to repeat.
     rateLimit: {
       enabled: true,
       storage: "database",
       window: 60,
       max: 120,
       customRules: {
-        "/device/code": { window: 60, max: 10 },
         "/oauth2/register": { window: 60, max: 10 },
         "/sign-in/social": { window: 60, max: 20 },
       },
@@ -102,12 +99,6 @@ export function createAuth(env: Env, origin: string) {
     },
     plugins: [
       bearer(),
-      deviceAuthorization({
-        verificationUri: "/device",
-        expiresIn: "10m",
-        interval: "3s",
-        validateClient: (clientId) => clientId === DESKTOP_CLIENT,
-      }),
       // OAuth for AI clients that read the notes over MCP (index.ts, mcp.ts).
       // A client such as Claude registers itself, the user signs in with
       // Google on /connect and approves it there, and the client gets a token
@@ -159,8 +150,10 @@ export async function migrate(env: Env, origin: string): Promise<string[]> {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS tenant (id TEXT PRIMARY KEY, name TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'free', status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS membership (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, PRIMARY KEY (user_id, tenant_id))"),
     env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS membership_default ON membership(user_id) WHERE is_default = 1"),
+    // The desktop's sign-in (index.ts, /api/v1/link/*): one-time codes, stored hashed.
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS desktop_link (code_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, challenge TEXT NOT NULL, expires INTEGER NOT NULL)"),
   ]);
-  return [...toBeCreated.map((t) => `created ${t.table}`), ...toBeAdded.map((t) => `altered ${t.table}`), "tenant, membership ready"];
+  return [...toBeCreated.map((t) => `created ${t.table}`), ...toBeAdded.map((t) => `altered ${t.table}`), "tenant, membership, desktop_link ready"];
 }
 
 const TENANT_ID = /^[a-z0-9_-]{3,64}$/;
@@ -200,7 +193,7 @@ export async function callerFromSession(auth: Auth, env: Env, req: Request): Pro
   if (!TENANT_ID.test(tenant)) return null;
   // One session is one device; its id names the device in the tenant's rows.
   const device = got.session.id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || "device";
-  return { tenant, device, account: got.user.email };
+  return { tenant, device, account: got.user.email, userId: got.user.id };
 }
 
 /**

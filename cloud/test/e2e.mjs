@@ -163,19 +163,32 @@ try {
   const ownerTenant = st.tenant;
   ok(ownerTenant !== "tenant-a" && ownerTenant !== "tenant-b" && st.rows === 0, "the account's tenant is its own and starts empty");
 
-  // The desktop's sign-in: device code, approval in the browser, token.
-  const dc = await (await auth("/device/code", { client_id: "deskpad-desktop" })).json();
-  ok(!!dc.device_code && !!dc.user_code && String(dc.verification_uri_complete).includes("/device?user_code="), "the desktop gets a device code and a page to open");
-  ok((await auth("/device/code", { client_id: "someone-else" })).status === 400, "other clients cannot start a device sign-in");
-  const poll = () => auth("/device/token", { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: dc.device_code, client_id: "deskpad-desktop" });
-  const pending = await poll();
-  ok(pending.status === 400 && (await pending.json()).error === "authorization_pending", "polling before approval says pending");
-  ok((await auth("/device/approve", { userCode: dc.user_code })).status !== 200, "nobody can approve without being signed in");
-  ok((await auth(`/device?user_code=${dc.user_code}`, undefined, web)).status === 200, "the signed-in browser claims the code");
-  ok((await auth("/device/approve", { userCode: dc.user_code }, web)).status === 200, "and approves it");
-  await new Promise((r) => setTimeout(r, 3500));
-  const granted = await (await poll()).json();
-  ok(typeof granted.access_token === "string" && granted.access_token.length >= 32, "the desktop receives its own session token");
+  // The desktop's sign-in: loopback redirect with PKCE. The app makes a
+  // verifier, the browser approves with its challenge, the one-time code goes
+  // to 127.0.0.1 only, and the app trades code + verifier for a session.
+  const cookie = (signUp.headers.get("set-cookie") ?? "").split(";")[0];
+  const b64u = (b) => Buffer.from(b).toString("base64url");
+  const linkVerifier = b64u(randomBytes(32));
+  const link = { challenge: b64u(createHash("sha256").update(linkVerifier).digest()), port: 53111, state: b64u(randomBytes(16)) };
+  const approve = (headers, body = link) => fetch(`${BASE}/link/approve`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  const trade = (code, v = linkVerifier) => fetch(`${BASE}/link/token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, verifier: v }) });
+  ok((await approve({ origin: ORIGIN })).status === 401, "nobody can approve a desktop sign-in without being signed in");
+  ok((await approve({ cookie, origin: "https://evil.example" })).status === 403, "a cross-site approval is refused");
+  ok((await approve({ authorization: `Bearer ${web}` })).status === 403, "a bearer token cannot approve one; only the browser can");
+  ok((await approve({ cookie, origin: ORIGIN }, { ...link, port: 80 })).status === 400 && (await approve({ cookie, origin: ORIGIN }, { ...link, challenge: "short" })).status === 400, "a bad port or challenge is refused");
+  const linked = await approve({ cookie, origin: ORIGIN });
+  const linkBack = new URL((await linked.json()).url ?? "http://invalid");
+  ok(linked.status === 200 && linkBack.origin === "http://127.0.0.1:53111" && linkBack.pathname === "/callback" && linkBack.searchParams.get("state") === link.state, "approval sends the code to 127.0.0.1 at the app's port, nowhere else");
+  const linkCode = linkBack.searchParams.get("code");
+  ok((await trade(linkCode, b64u(randomBytes(32)))).status === 400, "the code is useless without the app's verifier");
+  ok((await trade(linkCode)).status === 400, "and a failed try burns it");
+  const approved2 = await approve({ cookie, origin: ORIGIN });
+  const code2 = new URL((await approved2.json()).url).searchParams.get("code");
+  const traded = await trade(code2);
+  const granted = { access_token: (await traded.json()).token };
+  ok(traded.status === 200 && typeof granted.access_token === "string" && granted.access_token.length >= 32, "the desktop receives its own session token");
+  ok((await trade(code2)).status === 400, "a code works only once");
+  ok((await auth("/device/code", { client_id: "deskpad-desktop" })).status === 404, "the old device-code sign-in is gone");
   const dst = await (await call(granted.access_token, "/status")).json();
   ok(dst.tenant === ownerTenant && dst.device !== st.device, "the desktop lands in the same tenant as a separate device");
   r = await sync(granted.access_token, 0, [row("900", "from the desktop", Date.now())]);
@@ -185,7 +198,6 @@ try {
   ok((await sync(tok.a1, 0)).rows.every((x) => x.text !== "from the desktop"), "token tenant A still sees none of the account's rows");
 
   // Cookie sessions must not accept cross-site writes.
-  const cookie = (signUp.headers.get("set-cookie") ?? "").split(";")[0];
   const body = JSON.stringify({ since: 0, rows: [], days: [] });
   const xs = await fetch(`${BASE}/sync`, { method: "POST", headers: { cookie, origin: "https://evil.example", "content-type": "application/json" }, body });
   ok(xs.status === 403, "a cross-site POST with the session cookie is refused");

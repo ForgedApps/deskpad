@@ -29,7 +29,7 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `src/schedule.ts` | Natural-language date/time parser (`parseSchedule`) and the shared marker parser |
 | `src/capture.ts`, `src/tab.ts`, `src/alert.ts` | Capture popup, collapsed edge tab, alert overlay |
 | `index.html`, `capture.html`, `tab.html`, `alert.html` | One page per window (Vite multi-page) |
-| `src/cloud.ts` | Settings → Cloud sync: sign in (device flow), status, "sync now" |
+| `src/cloud.ts` | Settings → Cloud sync: sign in (browser, loopback + PKCE), status, "sync now" |
 | `cloud/` | The Worker: `src/index.ts` (routes, who is calling), `src/auth.ts` (Better Auth on D1, tenants), `src/tenant-do.ts` (one Durable Object per tenant), `src/vault.ts` (the notes as Markdown files in R2 under `t/<tenant>/md/`, rebuilt by the object's alarm after a sync; `buildVault` is pure, and `VAULT_VERSION` in `tenant-do.ts` must be bumped when its output changes; `[[Topic]]` and `#tag` are matched there and in `renderInline`, keep the two patterns the same), `src/mcp.ts` (`POST /mcp`: read-only tools over the vault for AI clients; OAuth comes from Better Auth's `mcp` plugin in `auth.ts`, sign-in and approval happen on `web/public/connect.html`), tests. Security rules to keep: `/api/auth/*` serves only the routes in `AUTH_ROUTES` (`index.ts`), so a new Better Auth route must be added there on purpose; `/mcp` accepts only tokens issued for it and those tokens open nothing else; no tool or route takes a tenant from the request. Pages under `web/public` run under the CSP in `_headers`, which allows no inline script: page code lives in its own `.js` file. `public/` is build output |
 | `web/` | The mobile web app: `index.html`, `src/main.ts` (page, sign-in, toolbar), `src/store.ts` (IndexedDB + sync), `src/core.ts` (pure merge code, twin of the Rust), `src/shim/` (stand-ins for the Tauri imports), `public/` (sign-in page `device.html`, service worker, manifest) |
 | `vite.web.config.ts` | Builds `web/` into `cloud/public` with the Tauri imports aliased to the shims |
@@ -274,10 +274,17 @@ Bump `version` in `src-tauri/tauri.conf.json` for each release.
   `plan_rows`/`apply_rows`/`plan_days`/`apply_days` are pure and tested with
   two simulated devices; keep them pure. The loop (`run`) pushes two seconds
   after `Store.version` stops moving and pulls every minute; it idles until
-  the PC is signed in. Signing in is the device flow (`begin_sign_in`,
-  `finish_sign_in`, command `cloud_sign_in`): the app opens `/device` in the
-  browser, shows the code to compare, and receives a Better Auth session
-  token; nothing is typed into the app. The browser step is Google only:
+  the PC is signed in. Signing in (`sync::sign_in`, command
+  `cloud_sign_in`) is a loopback redirect with PKCE: the app listens on
+  127.0.0.1 at a random port and opens `/device?challenge&port&state`; after
+  Google and a click on Connect, `POST /api/v1/link/approve` (browser session
+  only) stores a one-time code and sends the browser to
+  `http://127.0.0.1:<port>/callback`, and the app trades code + verifier at
+  `POST /api/v1/link/token` for a Better Auth session token. The code can only
+  reach the machine whose browser approved, so an approval link someone sends
+  you gets them nothing. Do not bring back the device-code flow (RFC 8628): it
+  let anyone start a sign-in and phish the approval. Nothing is typed into
+  the app. The browser step is Google only:
   sign-in and sign-up are one button, by design. Do not add a second way in
   or a separate registration path. A 401 drops the dead token so
   Settings offers Sign in again. `Item.rank` orders siblings across devices: the list

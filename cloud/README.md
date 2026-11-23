@@ -8,7 +8,7 @@ under `t/<tenant>/img/`. The tenant always comes from the caller's token.
 
 ```
 npm install
-npm test              # Worker against wrangler dev: sync, accounts, device flow, tenant isolation
+npm test              # Worker against wrangler dev: sync, accounts, desktop sign-in, MCP, tenant isolation
 npm run test:desktop  # the desktop's Rust sync engine against wrangler dev
 npm run dev           # http://127.0.0.1:8787: the API and the web app, secrets from .dev.vars
 ```
@@ -99,7 +99,8 @@ in production.
 
 | | |
 | --- | --- |
-| `/api/auth/*` | Better Auth: sign-in, sign-up, sessions, the device flow |
+| `/api/auth/*` | Better Auth: Google sign-in, sessions, OAuth for MCP clients (only the routes in `AUTH_ROUTES`) |
+| `POST /api/v1/link/approve`, `/api/v1/link/token` | the desktop's sign-in: approve in the browser, code to 127.0.0.1, trade with the PKCE verifier |
 | `POST /api/v1/sync` | push changed rows and days, pull everything after `since` |
 | `GET /api/v1/export` | everything the tenant has, as JSON |
 | `GET /api/v1/status` | tenant, device, account and counts; no content |
@@ -107,4 +108,4 @@ in production.
 | `PUT/GET/HEAD /api/v1/images/<name>` | content-addressed pictures |
 | `GET /api/v1/health`, `/api/v1/auth-methods` | unauthenticated |
 | `POST /api/admin/migrate` | create or update control-plane tables (`x-admin-key`) |
-| `/`, `/device` | the web app; the sign-in and device approval page |
+| `/`, `/device`, `/connect` | the web app; the desktop sign-in page; the MCP sign-in and approval page |

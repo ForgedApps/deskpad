@@ -21,12 +21,6 @@ const AUTH_ROUTES = new Set([
   "/get-session",
   "/sign-out",
   "/error",
-  // The desktop's sign-in.
-  "/device",
-  "/device/code",
-  "/device/token",
-  "/device/approve",
-  "/device/deny",
   // OAuth for MCP clients.
   "/oauth2/authorize",
   "/oauth2/consent",
@@ -38,6 +32,12 @@ const AUTH_ROUTES = new Set([
 ]);
 /** Password sign-in exists for the automated tests only. */
 const TEST_AUTH_ROUTES = new Set(["/sign-up/email", "/sign-in/email"]);
+/** How long the desktop has to trade its one-time sign-in code. */
+const LINK_TTL_MS = 2 * 60_000;
+const B64URL = /^[A-Za-z0-9_-]+$/;
+const b64url = (data: ArrayBuffer | Uint8Array) =>
+  btoa(String.fromCharCode(...new Uint8Array(data))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
 /** Largest request body `/sync` reads: two full pages of rows is far below this. */
 const SYNC_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -174,6 +174,30 @@ export default {
 
     if (!path.startsWith("/api/v1/")) return fail(404, "Not found");
 
+    // The desktop's sign-in, second half: the app trades the one-time code
+    // that reached it on 127.0.0.1 (see /api/v1/link/approve) plus the PKCE
+    // verifier only it knows for a session token. No session and no Origin:
+    // the app is not a browser, and the code and verifier are the credential.
+    if (path === "/api/v1/link/token" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as { code?: unknown; verifier?: unknown } | null;
+      const code = typeof body?.code === "string" ? body.code : "";
+      const verifier = typeof body?.verifier === "string" ? body.verifier : "";
+      if (!B64URL.test(code) || code.length !== 43 || !B64URL.test(verifier) || verifier.length < 43 || verifier.length > 128) {
+        return json({ error: "invalid_request" }, 400);
+      }
+      if (!env.BETTER_AUTH_SECRET) return fail(503, "Sign-in is not configured on this server");
+      // Taken and deleted in one statement, so a code works once even when raced.
+      const link = await env.DB.prepare("DELETE FROM desktop_link WHERE code_hash = ? RETURNING user_id, challenge, expires")
+        .bind(await sha256Hex(code))
+        .first<{ user_id: string; challenge: string; expires: number }>();
+      const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+      if (!link || link.expires < Date.now() || link.challenge !== challenge) return json({ error: "invalid_grant" }, 400);
+      const ctx = await createAuth(env, url.origin).$context;
+      const session = await ctx.internalAdapter.createSession(link.user_id);
+      if (!session?.token) return fail(500, "Could not sign in");
+      return json({ token: session.token });
+    }
+
     // A session cookie is sent by the browser on its own, so anything that
     // changes data must come from our own pages.
     if (req.method !== "GET" && req.method !== "HEAD" && !req.headers.get("authorization")) {
@@ -204,6 +228,29 @@ export default {
     if (!caller) return fail(401, "Not signed in");
 
     try {
+      // The desktop's sign-in, first half. The Deskpad app opened /device in
+      // this browser with a PKCE challenge and the port it listens on; the
+      // signed-in user clicked Connect. The one-time code goes to 127.0.0.1
+      // only, so an approval link someone else sent can never deliver it to
+      // them. Browser sessions only: the same-origin check above applies.
+      if (path === "/api/v1/link/approve" && req.method === "POST") {
+        if (!caller.userId || req.headers.get("authorization")) return fail(403, "Approve this from the browser");
+        const body = (await req.json().catch(() => null)) as { challenge?: unknown; port?: unknown; state?: unknown } | null;
+        const challenge = typeof body?.challenge === "string" ? body.challenge : "";
+        const state = typeof body?.state === "string" ? body.state : "";
+        const port = typeof body?.port === "number" ? body.port : NaN;
+        if (challenge.length !== 43 || !B64URL.test(challenge) || !state || state.length > 100 || !B64URL.test(state) || !Number.isInteger(port) || port < 1024 || port > 65535) {
+          return fail(400, "This sign-in link is not valid. Start again from the Deskpad app.");
+        }
+        const now = Date.now();
+        const code = b64url(crypto.getRandomValues(new Uint8Array(32)));
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM desktop_link WHERE expires < ?").bind(now),
+          env.DB.prepare("INSERT INTO desktop_link (code_hash, user_id, challenge, expires) VALUES (?, ?, ?, ?)").bind(await sha256Hex(code), caller.userId, challenge, now + LINK_TTL_MS),
+        ]);
+        return json({ url: `http://127.0.0.1:${port}/callback?code=${code}&state=${encodeURIComponent(state)}` });
+      }
+
       if (path === "/api/v1/sync" && req.method === "POST") {
         const size = Number(req.headers.get("content-length") ?? "");
         if (!Number.isFinite(size) || size <= 0) return fail(411, "Length required");

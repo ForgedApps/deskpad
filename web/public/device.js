@@ -1,9 +1,22 @@
 const $ = (id) => document.getElementById(id);
 const show = (id) => ["v-loading", "v-auth", "v-approve", "v-done"].forEach((v) => ($(v).hidden = v !== id));
 const params = new URLSearchParams(location.search);
-const userCode = (params.get("user_code") ?? "").trim();
+// What the Deskpad app put in the address when it opened this page: a PKCE
+// challenge, the port it listens on at 127.0.0.1, and a value it checks.
+const link = {
+  challenge: params.get("challenge") ?? "",
+  port: Number(params.get("port")),
+  state: params.get("state") ?? "",
+};
+const fromApp = params.has("challenge") || params.has("port") || params.has("state");
+const linkValid =
+  /^[A-Za-z0-9_-]{43}$/.test(link.challenge) && Number.isInteger(link.port) && link.port >= 1024 && link.port <= 65535 && /^[A-Za-z0-9_-]{1,100}$/.test(link.state);
+/** The app's own address on this computer; nothing else is ever sent a sign-in. */
+const appUrl = (query) => `http://127.0.0.1:${link.port}/callback?${query}&state=${encodeURIComponent(link.state)}`;
 // Where Google sends the browser back to: this page, without a stale error.
-const here = location.pathname + (userCode ? `?user_code=${encodeURIComponent(userCode)}` : "");
+const keep = new URLSearchParams(params);
+keep.delete("error");
+const here = location.pathname + (keep.size ? `?${keep}` : "");
 
 async function api(path, body) {
   const res = await fetch(`/api/auth${path}`, {
@@ -31,24 +44,17 @@ async function route() {
     $("auth-error").textContent = explain(params.get("error"));
     return show("v-auth");
   }
-  if (!userCode) {
-    $("done-text").textContent = `Signed in as ${me.user.email}.`;
-    return show("v-done");
-  }
-  try {
-    // Claims the code for this account and reports where it stands.
-    const state = await api(`/device?user_code=${encodeURIComponent(userCode)}`);
-    if (state.status !== "pending") {
-      $("done-text").textContent = state.status === "approved" ? "This PC is already connected. You can close this tab." : "That request was cancelled. Start again from the app.";
-      return show("v-done");
-    }
-  } catch (err) {
-    $("done-text").textContent = "That code is not valid any more. Start again from the Deskpad app.";
+  if (params.has("user_code") || (fromApp && !linkValid)) {
+    // An old-style link, or one that was cut or changed on the way.
+    $("done-text").textContent = "This sign-in link doesn't work. Start again from Sign in in the Deskpad app.";
     $("done-text").className = "error";
     return show("v-done");
   }
+  if (!fromApp) {
+    $("done-text").textContent = `Signed in as ${me.user.email}.`;
+    return show("v-done");
+  }
   $("who").textContent = me.user.email;
-  $("code").textContent = userCode;
   show("v-approve");
 }
 
@@ -66,23 +72,32 @@ $("btn-google").addEventListener("click", async () => {
   }
 });
 
-for (const [id, path, text] of [
-  ["btn-approve", "/device/approve", "Connected. You can close this tab and go back to Deskpad."],
-  ["btn-deny", "/device/deny", "Cancelled. Nothing was connected."],
-]) {
-  $(id).addEventListener("click", async () => {
-    $(id).disabled = true;
-    try {
-      await api(path, { userCode });
-      $("done-text").textContent = text;
-      show("v-done");
-    } catch (err) {
-      $("approve-error").textContent = err.message;
-    } finally {
-      $(id).disabled = false;
+$("btn-approve").addEventListener("click", async () => {
+  $("btn-approve").disabled = true;
+  $("approve-error").textContent = "";
+  try {
+    const res = await fetch("/api/v1/link/approve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(link),
+      credentials: "same-origin",
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || typeof data?.url !== "string" || !data.url.startsWith(`http://127.0.0.1:${link.port}/`)) {
+      throw new Error(data?.error || `Something went wrong (${res.status}).`);
     }
-  });
-}
+    // Hands the one-time code to the app on this computer, which shows its own "connected" page.
+    location.href = data.url;
+  } catch (err) {
+    $("approve-error").textContent = err.message;
+    $("btn-approve").disabled = false;
+  }
+});
+
+$("btn-deny").addEventListener("click", () => {
+  // Tells the waiting app to stop; it shows its own "cancelled" page.
+  location.href = appUrl("error=access_denied");
+});
 
 $("btn-signout").addEventListener("click", async () => {
   await api("/sign-out", {}).catch(() => {});
