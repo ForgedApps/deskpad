@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            cloud/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm ci --prefix cloud
+      - name: Typecheck (desktop)
+        run: npx tsc --noEmit -p .
+      - name: Build (desktop frontend)
+        run: npx vite build
+      - name: Web app merge tests
+        run: npm run test:web
+      - name: Build (web app)
+        run: npm run build:web
+      - name: Typecheck (Worker)
+        run: npm --prefix cloud run check
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml

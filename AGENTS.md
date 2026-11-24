@@ -34,6 +34,7 @@ Ctrl+Space, and throws a full-screen alert two minutes before a meeting.
 | `web/` | The mobile web app: `index.html`, `src/main.ts` (page, sign-in, toolbar), `src/store.ts` (IndexedDB + sync), `src/core.ts` (pure merge code, twin of the Rust), `src/shim/` (stand-ins for the Tauri imports), `public/` (sign-in page `device.html`, service worker, manifest) |
 | `vite.web.config.ts` | Builds `web/` into `cloud/public` with the Tauri imports aliased to the shims |
 | `shared/protocol.ts` | Wire types shared by the Worker and (later) the web app; `sync.rs` mirrors them |
+| `.codeden/` | CodeDen: `project.json` (setup, dev server, checks) and `VISION.md` (goals, protected areas); see "Working under CodeDen" |
 | `docs/sync-architecture.md` | Design for cloud sync, backup and multi-tenancy on Cloudflare; §12 says what is built |
 
 Windows are declared in `src-tauri/tauri.conf.json`; every window label must
@@ -61,6 +62,35 @@ also be listed in `src-tauri/capabilities/default.json`.
   such a shell anyway, hand the exe to Explorer, which starts it outside the
   sandbox: `explorer.exe "D:\path\to\Deskpad_x.y.z_x64-setup.exe"`. Both
   the app and the installer refuse to run when they detect the sandbox.
+
+## Working under CodeDen (agent sessions and the factory)
+
+The repo is set up for [CodeDen](https://github.com/leonvanzyl/codeden), which
+runs each agent session in its own git worktree under `~/.codeden/wt/` on its
+own branch. `.codeden/project.json` lists the setup commands, the dev server
+and the checks; `.codeden/VISION.md` holds the goals and protected areas the
+factory works against. `.github/workflows/ci.yml` runs the same checks on every
+pull request (Windows runner).
+
+- **Never launch the native app from a session.** Sessions run in parallel, and
+  only one Deskpad may run (it owns the right edge and Ctrl+Space). It also
+  reads and writes the user's real data in `%APPDATA%\com.jgentes.deskpad\`
+  whatever worktree it was built from. Test UI in the browser on the Vite dev
+  server with a mocked `__TAURI_INTERNALS__` (see "Working on it"), and leave
+  `npm run tauri dev`, `npm run tauri build` and the installer to the user.
+- The Vite dev server uses port 1420 with `strictPort`, so only one session at
+  a time can run it. If it is taken, say so; don't change the port.
+- `cloud`'s `npm test` and `npm run test:desktop` use fixed ports 8799/8798,
+  so they are not in the checks. Run them only when the Worker changed, and
+  only one at a time.
+- Never deploy (`npm run deploy`, `wrangler deploy`), never touch production D1
+  or R2, and never publish a release; those are the user's. Secrets
+  (`cloud/.dev.vars`, `cloud/.admin-key.txt`, `cloud.json`) are gitignored and
+  absent from worktrees on purpose.
+- Every `cargo test` in a fresh worktree builds Tauri from scratch, which takes
+  minutes and a few GB under `src-tauri/target`; that is expected.
+- Credentials are set up through real sign-in flows (browser + loopback,
+  OAuth), never by asking the user to paste a token or key.
 
 ## Packaged-app sandboxes (why data once "reverted")
 

@@ -1,0 +1,11 @@
+{
+  "setup": ["npm ci", "npm ci --prefix cloud"],
+  "devServer": { "command": "npm run dev", "port": 1420 },
+  "checks": [
+    "npx tsc --noEmit -p .",
+    "npx vite build",
+    "npm run test:web",
+    "npm --prefix cloud run check",
+    { "command": "cargo test --manifest-path src-tauri/Cargo.toml", "timeoutSec": 1800 }
+  ]
+}
